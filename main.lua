@@ -83,6 +83,8 @@ local function saveSettings()
     return ok
 end
 readSettings()
+-- Auto-card needs the advisor enabled; reconcile old saved settings.
+if S.options.autoCards then S.options.cardAdvisor=true end
 
 local function endpoints()
     local folder=RS:FindFirstChild('endpoints')
@@ -2142,8 +2144,8 @@ local sectionDescriptions={
     CARDS='Pick a strategy. Card advice works with Full Auto OFF.',
     FARM='Placement and upgrade options require Full Auto ON.',
     REPORTS='Run log and auto-copy work during normal manual play.',
-    UNITS='Team scanner, counters, and learned equip settings.',
-    OTHER='Event rejoin, diagnostics, and script controls.'
+    UNITS='Team scanner, inventory and learned equip settings.',
+    OTHER='Event matchmaking and script controls.'
 }
 local sectionPrefixes={
     {'START FULL AUTO','PLAY'},{'MODE:','PLAY'},
@@ -2220,7 +2222,8 @@ local function button(txt,cb,groupOverride)
     local b=mk('TextButton',{LayoutOrder=order,Size=UDim2.new(1,-4,0,41),
         Text=txt,Visible=section==activeSection,
         BackgroundColor3=C.button,BorderSizePixel=0,TextColor3=C.text,
-        Font=Enum.Font.GothamSemibold,TextSize=12,AutoButtonColor=true},scroll)
+        Font=Enum.Font.GothamSemibold,TextSize=12,
+        TextWrapped=true,AutoButtonColor=true},scroll)
     mk('UICorner',{CornerRadius=UDim.new(0,7)},b)
     menuItems[#menuItems+1]={button=b,section=section}
     b.MouseButton1Click:Connect(function() if S.alive then cb(b) end end)
@@ -2288,6 +2291,13 @@ local function toggle(label,key)
     local b
     b=button('',function()
         S.options[key]=not S.options[key]
+        if key=='cardAdvisor' and not S.options.cardAdvisor and S.options.autoCards then
+            S.options.autoCards=false
+            if autoCardButton then
+                autoCardButton.Text='AUTO CHOOSE BEST CARD: OFF'
+                autoCardButton.BackgroundColor3=C.muted
+            end
+        end
         b.Text=label..': '..(S.options[key] and 'ON' or 'OFF')
         b.BackgroundColor3=S.options[key] and C.active or C.muted
         saveSettings()
