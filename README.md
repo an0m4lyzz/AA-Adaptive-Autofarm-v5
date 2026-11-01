@@ -16,6 +16,19 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/an0m4lyzz/AA-Adaptive
 - Offers a touch-friendly configuration UI and diagnostic reports.
 - Includes experimental event queue learning, card recommendations and replay support.
 
+
+## New in v5.1: automatic run reports
+
+You **do not need to start the autofarm** to record a normal Event run.
+
+- **AUTO-LOG RUN** is ON by default. The script records map/mode and equipped units at the start, unit/upgrade snapshots every 5 waves, first sightings of bosses and enemy traits, visible modifier-card choices, and the result screen when detected.
+- **AUTO-COPY CARDS / BOSSES / END** is ON by default. A cumulative report is automatically copied to the clipboard when cards appear, bosses are seen, or a run ends. The clipboard holds only the latest copy, so avoid overwriting it before pasting.
+- If Delta supports \`writefile\` or \`appendfile\`, it also stores a persistent text file called \`K_AA_AutoReport_<your-user-id>_<place-id>.txt\` in the executor workspace.
+- **COPY COMPLETE AUTO REPORT** can be used at any time to recover the current in-memory report. **SHOW AUTO REPORT STATUS** reveals whether local saving succeeded.
+- If a match ends via a teleport before the end screen is visible, the last collected file may be incomplete. Some event cards may not be detectable from the client GUI. Recording is best-effort and has not yet been live-tested.
+
+For a safe first test, **leave START FULL AUTO OFF**, set MODE to Event, and play normally. The recorder makes observations without trying to place units, buy upgrades, select cards, or join the next event.
+
 ## Getting started
 
 1. Join Anime Adventures on a mobile device and open Delta.
