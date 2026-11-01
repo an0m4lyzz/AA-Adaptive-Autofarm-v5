@@ -7,6 +7,7 @@ end
 local function node(name,class,attrs,kids)
     local x={Name=name,ClassName=class or 'Folder',attrs=attrs or {},kids=kids or {}}
     function x:GetAttribute(k) return self.attrs[k] end
+    function x:GetAttributes() return self.attrs end
     function x:FindFirstChild(k) for _,v in ipairs(self.kids) do if v.Name==k then return v end end end
     function x:GetChildren() return self.kids end
     function x:IsA(k) return self.ClassName==k or k=='ValueBase' and self.ClassName:find('Value')~=nil end
@@ -24,7 +25,8 @@ local function world()
     end
     player.Parent=gameMock;ws.Parent=gameMock;rs.Parent=gameMock
     local deferred={}
-    local taskMock={spawn=function(fn) local co=coroutine.create(fn);deferred[#deferred+1]=co;return co end}
+    local taskMock={spawn=function(fn) local co=coroutine.create(fn);deferred[#deferred+1]=co;return co end,
+        wait=function() end}
     setfenv(factory,setmetatable({game=gameMock,task=taskMock},{__index=getfenv()}))
     local cfg=C.sanitize({});local env={};local log=C.logger()
     local a=factory(C,env,cfg,log)
@@ -113,5 +115,56 @@ check('finished flag without readable result stops as unknown',function()
     local a,_,_,ws=world();local w=node('_wave_num','IntValue');w.Value=1
     ws.kids={node('_UNITS'),w,node('_DATA','Folder',{GameFinished=true})}
     local s=a:observe(10);assert(s.resultVisible==true and s.outcome=='unknown')
+end)
+check('lobby markers do not become a match just because units and wave exist',function()
+    local a,_,_,ws,_,_,_,tasks=world();local w=node('_wave_num','IntValue');w.Value=0
+    ws.kids={node('_UNITS'),w,node('_LOBBIES'),node('_EVOLVE'),node('_traits')}
+    local s=a:observe(10)
+    assert(not s.inMatch and s.context=='Lobby (observed markers)' and #tasks==0)
+end)
+check('manual diagnostic exposes module paths and types without stored values',function()
+    local a,_,_,_,rs,_,player,tasks=world()
+    rs.kids={node('src','Folder',{}, {node('Loader','ModuleScript')})}
+    player.kids[#player.kids+1]=node('Profile','Folder',{uuid='private-value',encoded='private-json'},
+        {node('12345678-abcd-1234-abcd-123456789012','Folder',{unit_id='rukia_2'})})
+    local d=a:probePaths()
+    assert(d.text:find('replicated/src/Loader',1,true))
+    assert(d.text:find('uuid:string',1,true))
+    assert(not d.text:find('private-value',1,true) and not d.text:find('private-json',1,true))
+    assert(not d.text:find('12345678-abcd-1234-abcd-123456789012',1,true))
+    assert(#tasks==0 and #a.owned==0)
+end)
+check('manual diagnostic stops at a fixed node and output budget',function()
+    local a,_,_,_,rs=world();local folders={}
+    for i=1,200 do
+        local kids={}
+        for j=1,30 do kids[j]=node('Data'..j,'Folder') end
+        folders[i]=node('Data'..i,'Folder',{},kids)
+    end
+    rs.kids=folders
+    local d=a:probePaths()
+    assert(d.visited<=180 and #d.text<=30000 and d.truncated==true)
+end)
+check('diagnostic is manual and cached rather than added to the polling loop',function()
+    local a=world();a:observe(10);a:observe(11)
+    assert(a.pathDiagnostic==nil)
+    local d=a:probePaths();assert(a.pathDiagnostic==d)
+    a:observe(12);assert(a.pathDiagnostic==d)
+end)
+check('diagnostic does not expand unrelated replicated asset folders',function()
+    local a,_,_,_,rs=world();local touched=false
+    local assets=node('Assets','Folder')
+    function assets:GetChildren() touched=true;return {} end
+    rs.kids={assets};a:probePaths();assert(not touched)
+end)
+check('diagnostic redacts braced and prefixed UUID record names',function()
+    local a,_,_,_,_,_,player=world()
+    local uuid='12345678-abcd-1234-abcd-123456789012'
+    player.kids[#player.kids+1]=node('Inventory','Folder',{}, {
+        node('{'..uuid..'}','Folder'),node('unit_'..uuid,'Folder'),
+        node('unit_12345678abcd1234abcd123456789012','Folder')})
+    local d=a:probePaths()
+    assert(not d.text:find(uuid,1,true))
+    assert(not d.text:find('12345678abcd1234abcd123456789012',1,true))
 end)
 print('All '..n..' adapter tests passed')

@@ -75,7 +75,7 @@ function app:evolutionText()
 end
 function app:farmText()
     local s=self.snapshot or {}
-    return 'Stage: '..fmt(s.stageName)..' / '..fmt(s.stage)..'\nSource: '..fmt(s.stageSource)..
+    return 'Context: '..fmt(s.context)..'\nStage: '..fmt(s.stageName)..' / '..fmt(s.stage)..'\nSource: '..fmt(s.stageSource)..
         '\nMode: '..fmt(s.mode)..(s.modeVerified and ' (observed)' or ' (user-selected; unverified)')..
         '\nWave '..fmt(s.wave)..' | Yen '..fmt(s.cash)..'\nEquipped '..#(s.roster or {})..
         ' | own towers '..#(s.units or {})..' | path samples '..fmt(s.pathSamples)..
@@ -161,7 +161,7 @@ function app:completeReport()
     local out={'[K] AA RUKIA '..C.version,'OFFLINE VERIFIED; LIVE GAME / DELTA UNVERIFIED',
         self:ownershipText(),self:objectiveText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
-        'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
+        'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
         'Premium mutation endpoints: none. Dungeon navigation/chest automation: unavailable.',
         'Profile positions/costs: user-recorded. Path samples: observed enemy motion only.',
         'Legacy import: '..fmt(self.legacySummary),'EXPOSED EQUIPPED RECORDS (UUIDs omitted):'}
@@ -174,8 +174,17 @@ function app:completeReport()
         if v:IsA('Folder') or v:IsA('Model') then names[#names+1]=v.Name:sub(1,40) end
     end
     out[#out+1]='Workspace containers (bounded): '..table.concat(names,', ')
+    local diagnostic=self.adapter.pathDiagnostic
+    out[#out+1]=diagnostic and diagnostic.text or 'DATA PATH DIAGNOSTIC: not run; use REPORTS → SCAN DATA PATHS + COPY REPORT'
     out[#out+1]=self.log:text()
     return table.concat(out,'\n'):sub(1,65536)
+end
+function app:scanPathsAndCopy()
+    self.engine:stop('Manual data-path diagnostic','IDLE')
+    self:notice('Collecting bounded metadata; inventory values stay protected')
+    local result,err=self.adapter:probePaths()
+    if not result then self:notice(err);return end
+    if self.alive then self:copyReport() end
 end
 function app:copyReport()
     local txt=self:completeReport()

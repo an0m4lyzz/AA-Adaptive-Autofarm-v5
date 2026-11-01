@@ -5,7 +5,7 @@ local __modules = {}
 __modules.core = (function()
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.0'
+C.version = '6.0.1'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -428,6 +428,101 @@ return function(C, env, cfg, log)
         end
         self.resources=resources;self.resourcesAt=r and now or nil
     end
+    -- Explicit, one-shot metadata collection. Never calls a module, reads Source,
+    -- captures GUI text/Value data, or changes inventory/automation readiness.
+    function A:probePaths()
+        if not self.alive or self.probing then return nil,'Diagnostic unavailable or already running' end
+        self.probing=true
+        local ok,result=pcall(function()
+            local began=os.clock()
+            local rows={'DATA PATH DIAGNOSTIC (manual, selective, metadata only)',
+                'Values, source code and UUID record names are omitted. No modules or remotes are invoked.',
+                'Instance paths only; this cannot establish whether inventory lives in client Lua tables.'}
+            local queue,seen={},{}
+            local visited,truncated=0,false
+            local uuidPattern=string.rep('%x',8)..'%-'..string.rep('%x',4)..'%-'..
+                string.rep('%x',4)..'%-'..string.rep('%x',4)..'%-'..string.rep('%x',12)
+            local compactPattern=string.rep('%x',32)
+            local function name(raw)
+                raw=tostring(raw)
+                if raw:find(uuidPattern) or raw:find(compactPattern)
+                    or (#raw>=24 and raw:match('^[%da-fA-F%-]+$'))
+                    or (#raw>5 and raw:match('^%d+$')) then
+                    return '<record>'
+                end
+                return raw:gsub('[%c/|]','_'):sub(1,60)
+            end
+            local function push(item,label,depth,limit,group)
+                if not item or seen[item] then return end
+                if #queue>=180 then truncated=true;return end
+                seen[item]=true;queue[#queue+1]={item=item,label=label,depth=depth,limit=limit,group=group}
+            end
+            local scripts=child(LP,'PlayerScripts');local gui=child(LP,'PlayerGui')
+            push(LP,'player',0,3,'player')
+            push(scripts,'player/PlayerScripts',0,4,'scripts')
+            push(RS,'replicated',0,3,'replicated')
+            push(gui,'gui',0,1,'gui')
+            -- Explicit cheap lookups keep common code roots visible even if
+            -- ReplicatedStorage has more children than the per-node budget.
+            for _,key in ipairs({'src','Modules','Client','_Client','Framework','Services'}) do
+                push(child(RS,key),'replicated/'..key,1,3,'replicated')
+            end
+            local function relevant(raw)
+                raw=raw:lower()
+                for _,word in ipairs({'src','module','loader','client','data','profile','session',
+                    'collection','inventory','unit','service','framework','package','replica','state','item','stat'}) do
+                    if raw:find(word,1,true) then return true end
+                end
+                return false
+            end
+            for _,p in ipairs({'player/owned_units','player/collection_profile_data/owned_units',
+                'player/_data/owned_units','player/collection/owned_units','player/_data/items'}) do
+                rows[#rows+1]='CANDIDATE '..p..': '..(path(p,true) and 'present' or 'missing')
+            end
+            local cursor=1
+            while cursor<=#queue do
+                if not self.alive or os.clock()-began>2.5 then truncated=true;break end
+                local q=queue[cursor];cursor+=1;visited+=1
+                local item=q.item;local keys={}
+                local attrOK,attrs=pcall(function() return item:GetAttributes() end)
+                if attrOK and type(attrs)=='table' then
+                    for k,v in pairs(attrs) do
+                        if #keys>=12 then truncated=true;break end
+                        keys[#keys+1]=name(k)..':'..typeof(v)
+                    end
+                    table.sort(keys)
+                end
+                rows[#rows+1]=(q.label..' ['..item.ClassName..'] attributes='..
+                    (#keys>0 and table.concat(keys,',') or 'none')):sub(1,260)
+                local container=item:IsA('Folder') or item:IsA('Configuration')
+                    or item==LP or item==scripts or item==RS or item==gui
+                    or (q.group=='scripts' and item:IsA('ModuleScript'))
+                local descend=q.group~='replicated' or q.depth==0 or relevant(item.Name)
+                if container and descend and q.depth<q.limit then
+                    local childrenOK,kids=pcall(function() return item:GetChildren() end)
+                    if childrenOK then
+                        if #kids>48 then truncated=true end
+                        for i,v in ipairs(kids) do
+                            if i>48 then break end
+                            local skip=(q.group=='player' and (v==gui or v==scripts or v==LP.Character))
+                            if not skip and v.Name~='K_AA_Rukia_V6' then
+                                push(v,q.label..'/'..name(v.Name),q.depth+1,q.limit,q.group)
+                            end
+                        end
+                    else rows[#rows+1]=q.label..' children unavailable' end
+                end
+                if visited%20==0 then task.wait() end
+            end
+            rows[#rows+1]='Metadata nodes='..visited..' / 180; limited/cancelled='..tostring(truncated)
+            local text=table.concat(rows,'\n')
+            if #text>30000 then text=text:sub(1,30000);truncated=true end
+            return {text=text,visited=visited,truncated=truncated,at=began}
+        end)
+        self.probing=false
+        if not ok then return nil,'Metadata diagnostic failed: '..tostring(result):sub(1,160) end
+        self.pathDiagnostic=result
+        return result
+    end
     local function visible(x)
         while x and x~=game do
             if x:IsA('ScreenGui') and not x.Enabled then return false end
@@ -519,8 +614,16 @@ return function(C, env, cfg, log)
         local mapConfig=child(WS,'_MAP_CONFIG');local mapModel=child(WS,'_MAP')
         local started=scalar(WS,{'_waves_started'})
         local finished=scalar(child(WS,'_DATA'),{'GameFinished'})
+        -- The user's live lobby also contains _UNITS and _wave_num. Those alone
+        -- are insufficient evidence of a match. These markers are observations,
+        -- not a rule inferred from the selected Dungeon preset.
+        local lobby=w==0 and started~=true and child(WS,'_LOBBIES')~=nil
+            and (child(WS,'_EVOLVE')~=nil or child(WS,'_traits')~=nil)
+        local context=lobby and 'Lobby (observed markers)' or
+            (folder~=nil and waveNode~=nil and 'Match objects observed' or 'Unknown')
         if folder~=self.lastFolder or w<self.lastWave or mapConfig~=self.lastConfig
             or mapModel~=self.lastMap or waveNode~=self.lastWaveNode
+            or context~=self.lastContext
             or (started==false and self.lastStarted==true)
             or (finished==false and self.lastFinished==true) then
             self.run+=1;self.lastFolder=folder;self.stage=nil;self.mode=nil
@@ -529,6 +632,7 @@ return function(C, env, cfg, log)
             self.nextInventory=0
         end
         self.lastConfig=mapConfig;self.lastMap=mapModel;self.lastWaveNode=waveNode
+        self.lastContext=context
         self.lastStarted=started;self.lastFinished=finished
         self.lastWave=w
         if now>=self.nextInventory then self:refreshInventory(now) end
@@ -573,7 +677,7 @@ return function(C, env, cfg, log)
             end
         end
         local show,outcome,texts=self:result()
-        local s={now=now,run=tostring(self.run),inMatch=folder~=nil and waveNode~=nil,
+        local s={now=now,run=tostring(self.run),inMatch=folder~=nil and waveNode~=nil and not lobby,context=context,
             started=scalar(WS,{'_waves_started'})==true or w>0,stage=self.stage or 'unknown',
             stageName=self.stageName or 'unknown',stageVerified=self.stage~=nil,stageSource=self.stageSource,
             mode=self.mode or cfg.mode or 'Unknown',modeVerified=self.mode~=nil,
@@ -763,6 +867,7 @@ return function(app)
     button('FARM',function() return 'CURRENT REPLAY HAS NO ITEM COST: '..tostring(app.cfg.replayFreeConfirmed) end,function() app:toggle('replayFreeConfirmed') end)
     label('FARM','Automatic dungeon room choices, chests, keys, target priority, skills and queueing: UNAVAILABLE. Random tower event modes need their own adapter. Recorded positions are user data, not a map datamine.')
     button('REPORTS','COPY COMPLETE REPORT',function() app:copyReport() end)
+    button('REPORTS','SCAN DATA PATHS + COPY REPORT',function() app:scanPathsAndCopy() end)
     button('REPORTS','SAVE BOUNDED REPORT LOCALLY',function() app:saveReport() end)
     label('REPORTS',function() return app:reportStatus() end,colors.text)
     label('REPORTS',function() return app:recentLogs() end)
@@ -888,7 +993,7 @@ function app:evolutionText()
 end
 function app:farmText()
     local s=self.snapshot or {}
-    return 'Stage: '..fmt(s.stageName)..' / '..fmt(s.stage)..'\nSource: '..fmt(s.stageSource)..
+    return 'Context: '..fmt(s.context)..'\nStage: '..fmt(s.stageName)..' / '..fmt(s.stage)..'\nSource: '..fmt(s.stageSource)..
         '\nMode: '..fmt(s.mode)..(s.modeVerified and ' (observed)' or ' (user-selected; unverified)')..
         '\nWave '..fmt(s.wave)..' | Yen '..fmt(s.cash)..'\nEquipped '..#(s.roster or {})..
         ' | own towers '..#(s.units or {})..' | path samples '..fmt(s.pathSamples)..
@@ -974,7 +1079,7 @@ function app:completeReport()
     local out={'[K] AA RUKIA '..C.version,'OFFLINE VERIFIED; LIVE GAME / DELTA UNVERIFIED',
         self:ownershipText(),self:objectiveText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
-        'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
+        'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
         'Premium mutation endpoints: none. Dungeon navigation/chest automation: unavailable.',
         'Profile positions/costs: user-recorded. Path samples: observed enemy motion only.',
         'Legacy import: '..fmt(self.legacySummary),'EXPOSED EQUIPPED RECORDS (UUIDs omitted):'}
@@ -987,8 +1092,17 @@ function app:completeReport()
         if v:IsA('Folder') or v:IsA('Model') then names[#names+1]=v.Name:sub(1,40) end
     end
     out[#out+1]='Workspace containers (bounded): '..table.concat(names,', ')
+    local diagnostic=self.adapter.pathDiagnostic
+    out[#out+1]=diagnostic and diagnostic.text or 'DATA PATH DIAGNOSTIC: not run; use REPORTS → SCAN DATA PATHS + COPY REPORT'
     out[#out+1]=self.log:text()
     return table.concat(out,'\n'):sub(1,65536)
+end
+function app:scanPathsAndCopy()
+    self.engine:stop('Manual data-path diagnostic','IDLE')
+    self:notice('Collecting bounded metadata; inventory values stay protected')
+    local result,err=self.adapter:probePaths()
+    if not result then self:notice(err);return end
+    if self.alive then self:copyReport() end
 end
 function app:copyReport()
     local txt=self:completeReport()

@@ -1,6 +1,6 @@
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.0'
+C.version = '6.0.1'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}

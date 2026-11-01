@@ -46,6 +46,12 @@ Restart Roblox after older hooked builds. These protections do not prove Android
 3. Manually check the current Dungeon rewards and Evolve recipe before using a key.
 4. Follow [TESTING.md](TESTING.md) before attempting recorded combat.
 
+### v6.0.1: missing data-path diagnostic
+
+If the inventory refresh returns zero exposed records, use **REPORTS → SCAN DATA PATHS + COPY REPORT**. This manual scan adds relevant folder/module paths and attribute types to the report. It never executes modules or reads their source, GUI text or stored field values, and it does not make any previously unknown inventory verified. Its metadata scan is limited to 180 nodes, 48 children per folder, a 2.5-second cooperative deadline and 30 KiB of cached diagnostic text. Unrelated replicated assets and GUI descendants are not expanded. No polling scan is added.
+
+The user's lobby also exposed both _UNITS and wave 0. v6.0.1 checks observed lobby markers before labeling those objects as a match. Selected Dungeon mode still does not prove that the player is in a Dungeon.
+
 ## Development
 
 ```bash
