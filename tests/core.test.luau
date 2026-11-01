@@ -76,7 +76,7 @@ check('single pending placement, then timeout stops', function()
 end)
 check('confirmed acquisition stops grinding', function()
     local e=C.engine(config());local s=snap();local p=profile()
-    assert(e:arm(s,p));s.owned={{id='rukia_2',uuid='owned'}}
+    assert(e:arm(s,p));s.owned={{id='rukia_2',uuid='owned',statScope='collection'}}
     assert(e:tick(s,p)==nil and e.state=='GOAL_MET')
 end)
 check('unknown result is not a completed victory', function()
@@ -187,5 +187,18 @@ end)
 check('chosen identity is preserved but consents are not restored',function()
     local cfg=C.sanitize({selectedUuid='chosen',routeContext={stage='test',mode='Story',placeId=9}})
     assert(cfg.selectedUuid=='chosen' and cfg.routeContext==nil)
+end)
+check('a target among two observed traits satisfies the trait goal',function()
+    local s=snap();s.owned={{uuid='a',id='rukia_2',trait='Unique + Nimble',traits={'Unique','Nimble'},statScope='collection'}}
+    local cfg=config();cfg.goal='Trait'
+    assert(C.goalMet(s,cfg))
+end)
+check('spending guard protects an achieved target among multiple traits',function()
+    assert(not C.spendAllowed({enabled=true,cap=5,spent=0,cost=1,balance=5,fresh=true,verified=true,
+        target='Unique',current='Unique + Nimble',currentTraits={'Unique','Nimble'}}))
+end)
+check('a placed event tower cannot prove permanent Rukia acquisition',function()
+    local s=snap();s.owned={{uuid='borrowed',id='rukia_2',statScope='battle'}}
+    assert(not C.goalMet(s,config()))
 end)
 print('All '..n..' tests passed')

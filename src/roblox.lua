@@ -1,9 +1,11 @@
--- Native observations only. Historical transport signatures remain EXPERIMENTAL.
+-- Native observations plus an explicit, experimental cached-client reader.
+local makeInventory=require('./inventory')
 return function(C, env, cfg, log)
     local Players=game:GetService('Players')
     local RS=game:GetService('ReplicatedStorage')
     local WS=game:GetService('Workspace')
     local LP=Players.LocalPlayer
+    local inventoryParser=makeInventory(C)
     local A={alive=true,models={},owned={},roster={},resources={},ownedAt=nil,rosterAt=nil,
         nextInventory=0,run=0,lastWave=0,lastFolder=nil,stage=nil,mode=nil,stageSource='unknown',
         path={},previous=setmetatable({},{__mode='k'}),nextMapTry=0,failures={},replies={}}
@@ -90,9 +92,20 @@ return function(C, env, cfg, log)
                 end
             end
         end
+        if self.clientBinding then self.clientService=inventoryParser.current(self.clientBinding) end
+        local cached=self.clientService and inventoryParser.read(self.clientService,LP.UserId)
+        if cached and cached.valid and cfg.inventoryPath=='' then units=cached.owned;roster=cached.roster end
         self.owned=units;self.roster=roster
         self.ownedAt=#roots>0 and now or nil;self.rosterAt=#roster>0 and now or nil
         self.inventorySource=#roots>0 and 'partial player-replicated collection' or 'not exposed through configured paths'
+        if cached and cached.valid and cfg.inventoryPath=='' then
+            self.ownedAt=now
+            self.inventorySource='partial client cache: '..tostring(self.clientSource)..
+                ' | recognized='..#units..' equipped='..#roster..' rejected='..cached.rejected..
+                ' truncated='..tostring(cached.truncated)
+        elseif cached and not cached.valid and #roots==0 then
+            self.inventorySource='client cache schema unavailable; observations cleared'
+        end
         local r=cfg.resourcePath~='' and path(cfg.resourcePath,true) or path('player/_data/items',true)
         local resources={}
         local aliases={SacredTreasure={'sacred_treasure','SacredTreasure'},StarFruit={'StarFruit'},
@@ -112,7 +125,96 @@ return function(C, env, cfg, log)
                 end
             end
         end
-        self.resources=resources;self.resourcesAt=r and now or nil
+        if cached and cached.valid and cfg.resourcePath=='' then
+            for key,amount in pairs(cached.resources) do resources[key]=amount end
+        end
+        self.resources=resources;self.resourcesAt=(r or (cached and cached.valid)) and now or nil
+    end
+    -- Manual only: a single loaded-module snapshot and a bounded read of known
+    -- Loader closure upvalues. No service getter/initializer is ever called.
+    function A:startClientCache()
+        if not self.alive then return false,'Reader closed' end
+        if self:busy() then return false,'Another request is still pending' end
+        if self.clientService then
+            self.nextInventory=0;self.cacheDone=true
+            return true
+        end
+        if self.cacheAttempted then return false,'Client cache read already attempted this session' end
+        self.cacheAttempted=true
+        local getLoaded=getloadedmodules
+        local getUpvalues=type(debug)=='table' and rawget(debug,'getupvalues')
+        if type(getLoaded)~='function' or type(getUpvalues)~='function' then
+            self.cacheReport='CLIENT CACHE READER: unsupported; getloadedmodules/debug.getupvalues unavailable'
+            self.cacheDone=true;return false,self.cacheReport
+        end
+        local loaderModule=child(child(RS,'src'),'Loader')
+        if not loaderModule or not loaderModule:IsA('ModuleScript') then
+            self.cacheReport='CLIENT CACHE READER: observed Loader module missing'
+            self.cacheDone=true;return false,self.cacheReport
+        end
+        local mark={at=os.clock(),kind='client-cache'}
+        env.K_AA_CLIENT_CACHE_PENDING=mark;self.cacheDone=false
+        self.cacheReport='CLIENT CACHE READER: manual read pending; no initializer/getter calls'
+        task.spawn(function()
+            local trace={}
+            local function valid()
+                return self.alive and not mark.expired and os.clock()-mark.at<=8
+            end
+            local ok,found=pcall(function()
+                if not valid() then error('Read cancelled/expired',0) end
+                local listed,loaded=pcall(getLoaded)
+                if not listed or type(loaded)~='table' then error('Loaded-module enumeration unavailable',0) end
+                local present=false
+                for i=1,math.min(#loaded,8192) do if rawget(loaded,i)==loaderModule then present=true;break end end
+                if not present then error('Loader not confirmed already loaded; require skipped',0) end
+                trace[#trace+1]='Exact Loader listed as loaded; no service lookup functions called'
+                if not valid() then error('Read cancelled/expired',0) end
+                local readOK,loader=pcall(require,loaderModule)
+                if not readOK or type(loader)~='table' then error('Loaded Loader export unavailable',0) end
+                if not valid() then error('Read cancelled/expired',0) end
+                local roots={{value=loader,source='Loader export'}}
+                for _,field in ipairs({'init','load_client_service'}) do
+                    local fn=rawget(loader,field)
+                    local readCount=0
+                    if type(fn)=='function' then
+                        local valuesOK,values=pcall(getUpvalues,fn)
+                        if valuesOK and type(values)=='table' then
+                            local key=nil
+                            for index=1,32 do
+                                local value;key,value=next(values,key);if key==nil then break end
+                                readCount=index
+                                if type(value)=='table' then
+                                    roots[#roots+1]={value=value,source='Loader.'..field..'.upvalue#'..index}
+                                end
+                            end
+                        end
+                    end
+                    trace[#trace+1]='Loader.'..field..' type='..type(fn)..'; upvalues examined='..readCount
+                    if not valid() then error('Read cancelled/expired',0) end
+                end
+                local match=inventoryParser.find(roots,LP.UserId)
+                if not match then error('No supported existing local service session; no getter fallback',0) end
+                return match
+            end)
+            if env.K_AA_CLIENT_CACHE_PENDING==mark then env.K_AA_CLIENT_CACHE_PENDING=nil end
+            if not self.alive then return end
+            if mark.expired or os.clock()-mark.at>8 then
+                self.cacheDone=true
+                self.cacheReport='CLIENT CACHE READER: deadline exceeded; late results rejected'
+                return
+            end
+            self.cacheDone=true
+            if ok then
+                self.clientBinding={registry=found.registry,name=found.name}
+                self.clientService=found.service;self.clientSource=found.source;self.nextInventory=0
+                self.cacheReport='CLIENT CACHE READER: existing session found (experimental)\nCache source: '..found.source..
+                    '\nInitial read recognized units='..#found.snapshot.owned..' equipped='..#found.snapshot.roster..
+                    '; incomplete ownership is not absence. Explicit getter/initializer calls: 0.'
+                log:add('CLIENT CACHE','Existing session found; current fields require comparison in game')
+            else self.cacheReport='CLIENT CACHE READER: unavailable | '..tostring(found):sub(1,250) end
+            self.cacheReport=self.cacheReport..'\n'..table.concat(trace,'\n')
+        end)
+        return true
     end
     -- Explicit, one-shot metadata collection. Never calls a module, reads Source,
     -- captures GUI text/Value data, or changes inventory/automation readiness.
@@ -286,7 +388,7 @@ return function(C, env, cfg, log)
         r=child(r,name)
         return r and (r:IsA('RemoteFunction') or r:IsA('RemoteEvent')) and r or nil
     end
-    function A:busy() return env.K_AA_NETWORK_PENDING~=nil end
+    function A:busy() return env.K_AA_NETWORK_PENDING~=nil or env.K_AA_CLIENT_CACHE_PENDING~=nil end
     function A:issue(kind,args)
         if not self.alive or self:busy() then return false,'Transport busy/closed' end
         local remote
@@ -323,6 +425,12 @@ return function(C, env, cfg, log)
         return true
     end
     function A:poll()
+        local cache=env.K_AA_CLIENT_CACHE_PENDING
+        if cache and not cache.expired and os.clock()-cache.at>8 then
+            cache.expired=true;self.cacheDone=true
+            self.cacheReport='CLIENT CACHE READER: timeout; pending cache request remains locked; no retry'
+            return self.cacheReport
+        end
         local m=env.K_AA_NETWORK_PENDING
         if m and not m.expired and os.clock()-m.at>8 then
             m.expired=true
@@ -456,6 +564,6 @@ return function(C, env, cfg, log)
         if #p.entries==0 then return nil,'Place your team manually first' end
         return p
     end
-    function A:close() self.alive=false end
+    function A:close() self.alive=false;self.clientService=nil;self.clientBinding=nil end
     return A
 end

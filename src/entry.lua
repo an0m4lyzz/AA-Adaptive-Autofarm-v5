@@ -43,6 +43,7 @@ function app:unit() return C.chooseRukia((self.snapshot or {}).owned,self.cfg.se
 function app:ownershipText()
     local u=self:unit()
     if not u then return 'RUKIA OWNERSHIP: UNKNOWN\nThe exposed inventory scan does not prove absence.' end
+    if u.statScope~='collection' then return 'RUKIA SEEN IN MATCH\nPermanent collection ownership remains unknown.' end
     return 'OWNED OBSERVED: '..(u.id=='rukia_2_evo' and 'Snow Reaper (Final)' or 'Snow Reaper (War)')..
         '\nData: '..fmt(u.statScope)..' | level/upgrade='..fmt(u.level)
 end
@@ -64,9 +65,16 @@ function app:traitText()
 end
 function app:statsText()
     local u=self:unit() or {}
+    local potential={}
+    for _,key in ipairs({'stat_damage','stat_attack_cooldown','stat_range'}) do
+        if type(u.potential)=='table' and u.potential[key]~=nil then
+            potential[#potential+1]=key..'='..fmt(u.potential[key])
+        end
+    end
     return 'DMG '..fmt(u.damage)..' ['..fmt(u.damageGrade)..']\nSPA '..fmt(u.spa)..' ['..fmt(u.spaGrade)..
         ']\nRANGE '..fmt(u.range)..' ['..fmt(u.rangeGrade)..']\nScope: '..fmt(u.statScope)..
-        '\nWorthiness: '..fmt(u.worthiness)..' | Stat Cubes: '..fmt(((self.snapshot or {}).resources or {}).StatCube)
+        '\nWorthiness: '..fmt(u.worthiness)..' | Stat Cubes: '..fmt(((self.snapshot or {}).resources or {}).StatCube)..
+        (#potential>0 and '\nUnclassified potential fields: '..table.concat(potential,', ') or '')
 end
 function app:evolutionText()
     local s=self.snapshot or {};local r=s.resources or {};local u=self:unit()
@@ -103,9 +111,18 @@ function app:refreshInventory()
     self.adapter:refreshInventory(os.clock());self.snapshot=self.adapter:observe(os.clock())
     self:notice('Refreshed '..#self.snapshot.owned..' exposed unit records; partial inventory only')
 end
+function app:readClientCache()
+    self.engine:stop('Manual experimental client-cache read','IDLE')
+    self:notice('Attempting one loaded-client cache read; spending remains unavailable')
+    local started,why=self.adapter:startClientCache()
+    self.awaitCacheCopy=started
+    if not started then self:notice(why);self:copyReport() end
+end
 function app:nextRukia()
     local list={}
-    for _,u in ipairs((self.snapshot or {}).owned or {}) do if C.isRukia(u.id) then list[#list+1]=u end end
+    for _,u in ipairs((self.snapshot or {}).owned or {}) do
+        if C.isRukia(u.id) and u.statScope=='collection' then list[#list+1]=u end
+    end
     if #list==0 then self:notice('No exact secret Rukia ID observed');return end
     local idx=0;for i,u in ipairs(list) do if u.uuid==cfg.selectedUuid then idx=i end end
     cfg.selectedUuid=list[idx%#list+1].uuid
@@ -168,6 +185,7 @@ function app:completeReport()
         self:ownershipText(),self:objectiveText(),self:walletText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
+        self.adapter.cacheReport or 'CLIENT CACHE READER: not attempted; use RUKIA → READ CLIENT CACHE + COPY REPORT',
         'Premium mutation endpoints: none. Dungeon navigation/chest automation: unavailable.',
         'Profile positions/costs: user-recorded. Path samples: observed enemy motion only.',
         'Legacy import: '..fmt(self.legacySummary),'EXPOSED EQUIPPED RECORDS (UUIDs omitted):'}
@@ -182,7 +200,7 @@ function app:completeReport()
     end
     out[#out+1]='Workspace containers (bounded): '..table.concat(names,', ')
     local diagnostic=self.adapter.pathDiagnostic
-    out[#out+1]=diagnostic and diagnostic.text or 'DATA PATH DIAGNOSTIC: not run; use REPORTS → SCAN DATA PATHS + COPY REPORT'
+    out[#out+1]=diagnostic and diagnostic.text or 'DATA PATH DIAGNOSTIC: optional metadata scan not run'
     out[#out+1]=self.log:text()
     return table.concat(out,'\n'):sub(1,65536)
 end
@@ -243,6 +261,9 @@ task.spawn(function()
             local now=os.clock();local s=app.adapter:observe(now);app.snapshot=s
             local failure=app.adapter:poll()
             if failure then app.engine:reject(failure);app:notice(failure) end
+            if app.awaitCacheCopy and app.adapter.cacheDone then
+                app.awaitCacheCopy=false;app:copyReport()
+            end
             app.recorder:observe(s)
             app.observedWins=app.recorder.wins;app.observedLosses=app.recorder.losses
             local roster={}

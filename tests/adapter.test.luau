@@ -14,7 +14,7 @@ local function node(name,class,attrs,kids)
     for _,v in ipairs(x.kids) do v.Parent=x end
     return x
 end
-local function world()
+local function world(apis)
     local gui=node('PlayerGui','PlayerGui')
     local player=node('LocalPlayer','Player',{yen=300},{gui});player.UserId=12
     local ws=node('Workspace','Workspace')
@@ -27,7 +27,9 @@ local function world()
     local deferred={}
     local taskMock={spawn=function(fn) local co=coroutine.create(fn);deferred[#deferred+1]=co;return co end,
         wait=function() end}
-    setfenv(factory,setmetatable({game=gameMock,task=taskMock},{__index=getfenv()}))
+    local globals={game=gameMock,task=taskMock}
+    for k,v in pairs(apis or {}) do globals[k]=v end
+    setfenv(factory,setmetatable(globals,{__index=getfenv()}))
     local cfg=C.sanitize({});local env={};local log=C.logger()
     local a=factory(C,env,cfg,log)
     return a,env,cfg,ws,rs,gui,player,deferred
@@ -228,5 +230,78 @@ check('near-capacity diagnostic keeps the highest priority client descendants',f
     local d=a:probePaths()
     assert(d.visited<=180 and d.truncated)
     assert(d.text:find('replicated/src/client/AService/ACollection/AProfile/SessionService',1,true))
+end)
+local function cacheFixture(notLoaded)
+    local loader=node('Loader','ModuleScript')
+    local service={session={profile_data={user_id=12},collection={collection_profile_data={
+        owned_units={unitA={unit_id='rukia_2',traits={{trait='unique'}}}},equipped_units={[1]='unitA'}}}}}
+    local calls={loaded=0,required=0,upvalues=0}
+    local registry={StatsServiceClient={module=service}}
+    local init=function() error('must never initialize') end
+    local apis={getloadedmodules=function() calls.loaded+=1;return notLoaded and {} or {loader} end,
+        require=function(target) assert(target==loader);calls.required+=1;return {init=init} end,
+        debug={getupvalues=function(fn)
+            assert(fn==init);calls.upvalues+=1
+            return {[17]=registry}
+        end}}
+    local a,env,cfg,ws,rs,gui,player,tasks=world(apis)
+    rs.kids={node('src','Folder',{}, {loader})}
+    return a,env,service,calls,tasks,apis,registry
+end
+check('cache connection is never attempted during automatic observation',function()
+    local a,_,_,calls=cacheFixture();a:observe(10);a:observe(11)
+    assert(calls.loaded==0 and calls.required==0 and calls.upvalues==0)
+end)
+check('manual cache connection reads existing session and refreshes roster',function()
+    local a,env,service,calls,tasks=cacheFixture()
+    assert(a:startClientCache());assert(env.K_AA_CLIENT_CACHE_PENDING)
+    assert(coroutine.resume(tasks[1]))
+    local s=a:observe(10)
+    assert(#s.roster==1 and s.roster[1].id=='rukia_2' and s.roster[1].trait=='Unique')
+    assert(calls.loaded==1 and calls.required==1 and calls.upvalues==1)
+    assert(env.K_AA_CLIENT_CACHE_PENDING==nil)
+    service.session.collection.collection_profile_data.equipped_units={}
+    s=a:observe(20);assert(#s.roster==0 and calls.loaded==1)
+end)
+check('not-loaded Loader is never required or initialized',function()
+    local a,_,_,calls,tasks=cacheFixture(true)
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    assert(calls.required==0 and a.cacheDone and not a.clientService)
+end)
+check('late client-cache completion cannot update a closed adapter',function()
+    local a,env,_,_,tasks=cacheFixture()
+    assert(a:startClientCache());a:close();assert(coroutine.resume(tasks[1]))
+    assert(a.clientService==nil and env.K_AA_CLIENT_CACHE_PENDING==nil)
+end)
+check('cache timeout locks a pending operation and rejects late results',function()
+    local a,env,_,_,tasks=cacheFixture()
+    assert(a:startClientCache());env.K_AA_CLIENT_CACHE_PENDING.at=os.clock()-9
+    assert(a:poll());assert(env.K_AA_CLIENT_CACHE_PENDING and a.cacheDone)
+    assert(coroutine.resume(tasks[1]));assert(not a.clientService)
+end)
+check('cache capability failure reports unavailable without spawning a worker',function()
+    local a,env=world({getloadedmodules=false,debug={}})
+    assert(not a:startClientCache() and env.K_AA_CLIENT_CACHE_PENDING==nil)
+end)
+check('another instance pending cache read blocks replacement requests',function()
+    local a,env,_,calls=cacheFixture();env.K_AA_CLIENT_CACHE_PENDING={at=os.clock()}
+    assert(not a:startClientCache() and calls.loaded==0)
+end)
+check('synchronous cache deadline expiry still completes with an unavailable result',function()
+    local clock=0;local loader=node('Loader','ModuleScript')
+    local a,env,_,_,rs,_,_,tasks=world({os={clock=function() return clock end},
+        getloadedmodules=function() clock=9;return {loader} end,
+        debug={getupvalues=function() return {} end}})
+    rs.kids={node('src','Folder',{}, {loader})}
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    assert(a.cacheDone and not a.clientService and env.K_AA_CLIENT_CACHE_PENDING==nil)
+end)
+check('removed cache registry entry clears observed units on refresh',function()
+    local a,_,_,calls,tasks,_,registry=cacheFixture()
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    assert(#a:observe(10).roster==1)
+    registry.StatsServiceClient=nil
+    local s=a:observe(20)
+    assert(#s.roster==0 and #s.owned==0 and s.rosterAt==nil and calls.loaded==1)
 end)
 print('All '..n..' adapter tests passed')

@@ -6,9 +6,20 @@ Restart Roblox after older injections. Execute the unchanged loadstring once in 
 
 Only after a stable observer test, try one re-execution: the old GUI must disappear and one new GUI remain. Closing must stop updates and dragging. If it crashes before the GUI, stop repeated injection; offline syntax tests cannot diagnose that crash.
 
+## Read the client cache (v6.0.3)
+
+1. Keep Full Auto OFF and open the game's Units/Collection once.
+2. In this tool, tap **RUKIA → READ CLIENT CACHE + COPY REPORT** once.
+3. Wait for the copied-report status and paste the report. Capability or schema failure is a blocker, not a reason to enable farming.
+4. If records appear, compare equipped IDs/slots, Rukia form, traits and quantities with the actual Collection. Unknown raw stats stay unknown. Unit UUIDs remain local and are omitted from the report.
+
+This manual experimental path checks loaded Loader status, retrieves its export and reads existing closure/cache tables. No service getter or initializer is explicitly invoked. Delta may isolate module caches differently; native require can execute module code in a different environment. Timeout rejects late results and blocks duplicates but cannot interrupt a native call. An unsupported attempt is not retried automatically. No summons, rerolls, keys or evolution actions are enabled by connecting the reader.
+
+After a successful connection, REFRESH EXPOSED INVENTORY rereads the known service table without another loaded-module snapshot. Compare updates after changing the equipped team manually. These observations do not certify server freshness or full combat compatibility.
+
 ## Verify observations
 
-Compare exact Rukia copy, form, trait, stat scope, raw values and grades with unit details. Plain rukia is the old unit. SETTINGS accepts explicit player/... inventory/resource roots; only a few direct candidates are tried. Client tables unavailable as Instances remain unknown; no GC scanning or arbitrary client-module execution is used.
+Compare exact Rukia copy, form, trait, stat scope, raw values and grades with unit details. Plain rukia is the old unit. SETTINGS accepts explicit player/... inventory/resource roots; only a few direct candidates are tried. Table-based inventories require the manual experimental cache reader; unsupported layouts stay unknown. No GC scanning or arbitrary numeric-module loading is used.
 
 Currency may be bound to an actual local match Value (for example player/leaderstats/yen only if it exists). Never bind account gems/gold or another player's cash. Stage ID must come from observed GetLevelData; selected mode stays unverified unless the response supplies it. Unknown counts are not zero.
 

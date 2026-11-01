@@ -5,7 +5,7 @@ local __modules = {}
 __modules.core = (function()
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.2'
+C.version = '6.0.3'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -24,6 +24,7 @@ function C.isRukia(id) return id=='rukia_2' or id=='rukia_2_evo' end
 function C.chooseRukia(units,uuid)
     for _,u in ipairs(units or {}) do if C.isRukia(u.id) and u.uuid==uuid then return u end end
     if type(uuid)=='string' and uuid~='' then return nil end
+    for _,u in ipairs(units or {}) do if C.isRukia(u.id) and u.statScope=='collection' then return u end end
     for _,u in ipairs(units or {}) do if C.isRukia(u.id) then return u end end
 end
 local consentKeys={routeConfirmed='routeContext',protocolConfirmed='protocolContext',replayFreeConfirmed='replayContext'}
@@ -36,6 +37,14 @@ function C.bindConsent(cfg,key,s)
 end
 local grades={['C-']=1,C=2,['C+']=3,['B-']=4,B=5,['B+']=6,['A-']=7,A=8,['A+']=9,
     ['S-']=10,S=11,['S+']=12,SS=13,SSS=14}
+function C.hasTrait(u,target)
+    if not u or type(target)~='string' or target=='' then return false end
+    if u.trait==target then return true end
+    if type(u.traits)=='table' then
+        for i=1,4 do if rawget(u.traits,i)==target then return true end end
+    end
+    return false
+end
 function C.statsMet(u,target)
     if not u or u.statScope~='collection' or not grades[target] then return false end
     for _,key in ipairs({'damageGrade','spaGrade','rangeGrade'}) do
@@ -48,7 +57,7 @@ function C.spendAllowed(p)
     if not p.verified or not p.fresh then return false,'Unverified or stale inventory/protocol' end
     if type(p.target)~='string' or p.target=='' then return false,'Target unknown' end
     if p.current==nil then return false,'Current result unknown' end
-    if p.current==p.target then return false,'Target protected' end
+    if C.hasTrait({trait=p.current,traits=p.currentTraits},p.target) then return false,'Target protected' end
     for _,k in ipairs({'cap','spent','cost','balance'}) do
         if not C.finite(p[k]) then return false,'Unknown resource/cost' end
     end
@@ -182,18 +191,18 @@ function C.recorder(log)
 end
 function C.goalMet(s,cfg)
     local u=C.chooseRukia(s.owned,cfg.selectedUuid)
-    if not u or not s.ownedAt or s.now-s.ownedAt>15 then return false end
+    if not u or u.statScope~='collection' or not s.ownedAt or s.now-s.ownedAt>15 then return false end
     if cfg.goal=='Acquire' then return true end
-    if cfg.goal=='Trait' then return u.trait==cfg.targetTrait end
+    if cfg.goal=='Trait' then return C.hasTrait(u,cfg.targetTrait) end
     if cfg.goal=='Stats' then return C.statsMet(u,cfg.targetGrade) end
     if cfg.goal=='Evolution' then return u.id=='rukia_2_evo' end
-    return u.id=='rukia_2_evo' and u.trait==cfg.targetTrait and C.statsMet(u,cfg.targetGrade)
+    return u.id=='rukia_2_evo' and C.hasTrait(u,cfg.targetTrait) and C.statsMet(u,cfg.targetGrade)
 end
 function C.plan(s,cfg)
     local u=C.chooseRukia(s.owned,cfg.selectedUuid)
-    if not u then return 'Acquire Snow Reaper (War)',
+    if not u or u.statScope~='collection' then return 'Acquire Snow Reaper (War)',
         'Historical route: Dungeon final chest. Confirm Update 21 reward table before spending a key. Pity/rate unknown.' end
-    if u.trait~=cfg.targetTrait then return 'Trait target: '..cfg.targetTrait,
+    if not C.hasTrait(u,cfg.targetTrait) then return 'Trait target: '..cfg.targetTrait,
         'Current='..tostring(u.trait or 'unknown')..'. Reroll protocol unavailable; manual rolls only, within your budget.' end
     if not C.statsMet(u,cfg.targetGrade) then return 'Stat target: '..cfg.targetGrade,
         'Inspect raw DMG/SPA/RNG and grades. Historical: build worthiness before rerolling; single-stat cubes preserve other stats.' end
@@ -316,13 +325,170 @@ return C
 
 end)()
 
+__modules.inventory = (function()
+-- Read-only parsing of an existing client-service export. No game/executor APIs.
+return function(C)
+    local I={}
+    I.itemAliases={SacredTreasure={'sacred_treasure','SacredTreasure'},StarFruit={'StarFruit'},
+        StarFruitBlue={'StarFruitBlue'},StarFruitRed={'StarFruitRed'},StarFruitGreen={'StarFruitGreen'},
+        StarFruitEpic={'StarFruitEpic'},DungeonKey={'dungeon_key','DungeonKey'},
+        RerollToken={'reroll_token','RerollToken'},StarRemnant={'star_remnant','StarRemnant'},
+        StatCube={'stat_cube','StatCube'},PerfectStatCube={'perfect_stat_cube','PerfectStatCube'}}
+    local function get(t,k) if type(t)=='table' then return rawget(t,k) end end
+    local function tableAt(t,k) local v=get(t,k);return type(v)=='table' and v or nil end
+    local function number(t,keys)
+        for _,k in ipairs(keys) do local v=get(t,k);if C.finite(v) then return v end end
+    end
+    local function text(t,keys)
+        for _,k in ipairs(keys) do
+            local v=get(t,k)
+            if type(v)=='string' and #v>0 and #v<=160 then return v end
+        end
+    end
+    local traitNames={unique='Unique',divine='Divine',celestial='Celestial',reaper='Reaper',
+        godspeed='Godspeed',sniper='Sniper',golden='Golden'}
+    local function readUnit(key,t)
+        if type(t)~='table' or type(key)~='string' or #key==0 or #key>160 then return nil end
+        for _,alias in ipairs({'uuid','unique_id'}) do
+            local explicit=get(t,alias)
+            if explicit~=nil and (type(explicit)~='string' or explicit~=key) then return nil end
+        end
+        local id=text(t,{'unit_id','unitId','id'});if not id then return nil end
+        local stats=tableAt(t,'stats') or t
+        local u={uuid=key,id=id,statScope='collection',traits={},potential={}}
+        local keys={damage={'damage','dmg'},spa={'spa','attack_cooldown'},range={'range','attack_range'},
+            cost={'placement_cost','spawn_cost','place_cost'},level={'level'},
+            takedowns={'takedowns','kills'},worthiness={'worthiness'}}
+        for field,names in pairs(keys) do u[field]=number(stats,names) or number(t,names) end
+        for field,names in pairs({damageGrade={'damage_grade','damageGrade'},spaGrade={'spa_grade','spaGrade'},
+            rangeGrade={'range_grade','rangeGrade'}}) do u[field]=text(stats,names) or text(t,names) end
+        local traits=tableAt(t,'traits')
+        if traits then
+            for i=1,4 do
+                local v=rawget(traits,i)
+                local raw=type(v)=='string' and v or text(v,{'trait','trait_id'})
+                if raw and #raw<=48 then u.traits[#u.traits+1]=traitNames[raw:lower()] or raw end
+            end
+        end
+        if #u.traits==0 then
+            local raw=text(t,{'trait','trait_name'})
+            if raw then u.traits[1]=traitNames[raw:lower()] or raw end
+        end
+        if #u.traits>0 then u.trait=table.concat(u.traits,' + ') end
+        for _,field in ipairs({'stat_damage','stat_attack_cooldown','stat_range'}) do
+            local v=get(t,field);if C.finite(v) then u.potential[field]=v end
+        end
+        return u
+    end
+    function I.read(service,userId)
+        local out={valid=false,owned={},roster={},resources={},truncated=false,rejected=0,reason='Client schema unavailable'}
+        local session=tableAt(service,'session')
+        local profile=tableAt(session,'profile_data')
+        local collection=tableAt(tableAt(session,'collection'),'collection_profile_data')
+        local owned=tableAt(collection,'owned_units')
+        if not session or not owned then return out end
+        for _,source in pairs({service,session,profile,collection}) do
+            for _,key in ipairs({'user_id','player_id','UserId'}) do
+                local id=get(source,key)
+                if id~=nil and ((type(id)~='number' and type(id)~='string') or tonumber(id)~=userId) then
+                    out.reason='Client owner mismatch/unverified';return out
+                end
+            end
+        end
+        out.valid=true;out.reason='Partial local client-service collection'
+        local byUUID={}
+        local function add(uuid)
+            if type(uuid)~='string' then return nil end
+            if byUUID[uuid] then return byUUID[uuid] end
+            local u=readUnit(uuid,rawget(owned,uuid))
+            if u then byUUID[uuid]=u;out.owned[#out.owned+1]=u else out.rejected+=1 end
+            return u
+        end
+        local equipped=tableAt(collection,'equipped_units')
+        if equipped then
+            for slot=1,8 do
+                local numeric=rawget(equipped,slot)
+                local named=rawget(equipped,tostring(slot))
+                local ambiguous=numeric~=nil and named~=nil and numeric~=named
+                local uuid=numeric;if uuid==nil then uuid=named end
+                if ambiguous then out.rejected+=1;uuid=nil end
+                local u=add(uuid)
+                if u then
+                    -- A UUID occupying multiple slots is ambiguous, so never
+                    -- manufacture a second equipped record for it.
+                    if u.slot then out.rejected+=1 else u.slot=slot;out.roster[#out.roster+1]=u end
+                end
+            end
+        end
+        local key=nil
+        for _=1,400 do
+            key=next(owned,key);if key==nil then break end
+            add(key)
+        end
+        if key~=nil and next(owned,key)~=nil then out.truncated=true end
+        table.sort(out.owned,function(a,b) return a.id==b.id and a.uuid<b.uuid or a.id<b.id end)
+        local items=tableAt(tableAt(session,'inventory'),'inventory_profile_data')
+        items=tableAt(items,'normal_items')
+        if items then
+            for label,aliases in pairs(I.itemAliases) do
+                for _,id in ipairs(aliases) do
+                    local amount=rawget(items,id)
+                    if type(amount)=='table' then amount=number(amount,{'amount','count','quantity'}) end
+                    if C.finite(amount) and amount>=0 then out.resources[label]=amount;break end
+                end
+            end
+        end
+        local rerolls=number(profile,{'trait_reroll_tokens'})
+        if rerolls and rerolls>=0 then out.resources.RerollToken=rerolls end
+        return out
+    end
+    function I.current(binding)
+        if type(binding)~='table' then return nil end
+        local entry=tableAt(binding.registry,binding.name)
+        return tableAt(entry,'module') or entry
+    end
+    function I.find(roots,userId)
+        local seen={}
+        local containers={'CLIENT_SERVICE','client_services','services','_services','modules','_modules'}
+        for _,serviceName in ipairs({'ItemInventoryServiceClient','StatsServiceClient','GUIService'}) do
+            for i=1,math.min(#roots,65) do
+                local root=roots[i]
+                local value=root and root.value
+                if type(value)=='table' then
+                    local parents={{value=value,path=root.source}}
+                    for _,name in ipairs(containers) do
+                        local v=tableAt(value,name)
+                        if v then parents[#parents+1]={value=v,path=root.source..'.'..name} end
+                    end
+                    for _,parent in ipairs(parents) do
+                        local entry=tableAt(parent.value,serviceName)
+                        local service=tableAt(entry,'module') or entry
+                        if service and not seen[service] then
+                            seen[service]=true
+                            local snapshot=I.read(service,userId)
+                            if snapshot.valid then return {service=service,source=parent.path..'.'..serviceName,
+                                registry=parent.value,name=serviceName,snapshot=snapshot} end
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+    return I
+end
+
+end)()
+
 __modules.roblox = (function()
--- Native observations only. Historical transport signatures remain EXPERIMENTAL.
+-- Native observations plus an explicit, experimental cached-client reader.
+local makeInventory=__modules.inventory
 return function(C, env, cfg, log)
     local Players=game:GetService('Players')
     local RS=game:GetService('ReplicatedStorage')
     local WS=game:GetService('Workspace')
     local LP=Players.LocalPlayer
+    local inventoryParser=makeInventory(C)
     local A={alive=true,models={},owned={},roster={},resources={},ownedAt=nil,rosterAt=nil,
         nextInventory=0,run=0,lastWave=0,lastFolder=nil,stage=nil,mode=nil,stageSource='unknown',
         path={},previous=setmetatable({},{__mode='k'}),nextMapTry=0,failures={},replies={}}
@@ -409,9 +575,20 @@ return function(C, env, cfg, log)
                 end
             end
         end
+        if self.clientBinding then self.clientService=inventoryParser.current(self.clientBinding) end
+        local cached=self.clientService and inventoryParser.read(self.clientService,LP.UserId)
+        if cached and cached.valid and cfg.inventoryPath=='' then units=cached.owned;roster=cached.roster end
         self.owned=units;self.roster=roster
         self.ownedAt=#roots>0 and now or nil;self.rosterAt=#roster>0 and now or nil
         self.inventorySource=#roots>0 and 'partial player-replicated collection' or 'not exposed through configured paths'
+        if cached and cached.valid and cfg.inventoryPath=='' then
+            self.ownedAt=now
+            self.inventorySource='partial client cache: '..tostring(self.clientSource)..
+                ' | recognized='..#units..' equipped='..#roster..' rejected='..cached.rejected..
+                ' truncated='..tostring(cached.truncated)
+        elseif cached and not cached.valid and #roots==0 then
+            self.inventorySource='client cache schema unavailable; observations cleared'
+        end
         local r=cfg.resourcePath~='' and path(cfg.resourcePath,true) or path('player/_data/items',true)
         local resources={}
         local aliases={SacredTreasure={'sacred_treasure','SacredTreasure'},StarFruit={'StarFruit'},
@@ -431,7 +608,96 @@ return function(C, env, cfg, log)
                 end
             end
         end
-        self.resources=resources;self.resourcesAt=r and now or nil
+        if cached and cached.valid and cfg.resourcePath=='' then
+            for key,amount in pairs(cached.resources) do resources[key]=amount end
+        end
+        self.resources=resources;self.resourcesAt=(r or (cached and cached.valid)) and now or nil
+    end
+    -- Manual only: a single loaded-module snapshot and a bounded read of known
+    -- Loader closure upvalues. No service getter/initializer is ever called.
+    function A:startClientCache()
+        if not self.alive then return false,'Reader closed' end
+        if self:busy() then return false,'Another request is still pending' end
+        if self.clientService then
+            self.nextInventory=0;self.cacheDone=true
+            return true
+        end
+        if self.cacheAttempted then return false,'Client cache read already attempted this session' end
+        self.cacheAttempted=true
+        local getLoaded=getloadedmodules
+        local getUpvalues=type(debug)=='table' and rawget(debug,'getupvalues')
+        if type(getLoaded)~='function' or type(getUpvalues)~='function' then
+            self.cacheReport='CLIENT CACHE READER: unsupported; getloadedmodules/debug.getupvalues unavailable'
+            self.cacheDone=true;return false,self.cacheReport
+        end
+        local loaderModule=child(child(RS,'src'),'Loader')
+        if not loaderModule or not loaderModule:IsA('ModuleScript') then
+            self.cacheReport='CLIENT CACHE READER: observed Loader module missing'
+            self.cacheDone=true;return false,self.cacheReport
+        end
+        local mark={at=os.clock(),kind='client-cache'}
+        env.K_AA_CLIENT_CACHE_PENDING=mark;self.cacheDone=false
+        self.cacheReport='CLIENT CACHE READER: manual read pending; no initializer/getter calls'
+        task.spawn(function()
+            local trace={}
+            local function valid()
+                return self.alive and not mark.expired and os.clock()-mark.at<=8
+            end
+            local ok,found=pcall(function()
+                if not valid() then error('Read cancelled/expired',0) end
+                local listed,loaded=pcall(getLoaded)
+                if not listed or type(loaded)~='table' then error('Loaded-module enumeration unavailable',0) end
+                local present=false
+                for i=1,math.min(#loaded,8192) do if rawget(loaded,i)==loaderModule then present=true;break end end
+                if not present then error('Loader not confirmed already loaded; require skipped',0) end
+                trace[#trace+1]='Exact Loader listed as loaded; no service lookup functions called'
+                if not valid() then error('Read cancelled/expired',0) end
+                local readOK,loader=pcall(require,loaderModule)
+                if not readOK or type(loader)~='table' then error('Loaded Loader export unavailable',0) end
+                if not valid() then error('Read cancelled/expired',0) end
+                local roots={{value=loader,source='Loader export'}}
+                for _,field in ipairs({'init','load_client_service'}) do
+                    local fn=rawget(loader,field)
+                    local readCount=0
+                    if type(fn)=='function' then
+                        local valuesOK,values=pcall(getUpvalues,fn)
+                        if valuesOK and type(values)=='table' then
+                            local key=nil
+                            for index=1,32 do
+                                local value;key,value=next(values,key);if key==nil then break end
+                                readCount=index
+                                if type(value)=='table' then
+                                    roots[#roots+1]={value=value,source='Loader.'..field..'.upvalue#'..index}
+                                end
+                            end
+                        end
+                    end
+                    trace[#trace+1]='Loader.'..field..' type='..type(fn)..'; upvalues examined='..readCount
+                    if not valid() then error('Read cancelled/expired',0) end
+                end
+                local match=inventoryParser.find(roots,LP.UserId)
+                if not match then error('No supported existing local service session; no getter fallback',0) end
+                return match
+            end)
+            if env.K_AA_CLIENT_CACHE_PENDING==mark then env.K_AA_CLIENT_CACHE_PENDING=nil end
+            if not self.alive then return end
+            if mark.expired or os.clock()-mark.at>8 then
+                self.cacheDone=true
+                self.cacheReport='CLIENT CACHE READER: deadline exceeded; late results rejected'
+                return
+            end
+            self.cacheDone=true
+            if ok then
+                self.clientBinding={registry=found.registry,name=found.name}
+                self.clientService=found.service;self.clientSource=found.source;self.nextInventory=0
+                self.cacheReport='CLIENT CACHE READER: existing session found (experimental)\nCache source: '..found.source..
+                    '\nInitial read recognized units='..#found.snapshot.owned..' equipped='..#found.snapshot.roster..
+                    '; incomplete ownership is not absence. Explicit getter/initializer calls: 0.'
+                log:add('CLIENT CACHE','Existing session found; current fields require comparison in game')
+            else self.cacheReport='CLIENT CACHE READER: unavailable | '..tostring(found):sub(1,250) end
+            self.cacheReport=self.cacheReport..'\n'..table.concat(trace,'\n')
+        end)
+        return true
     end
     -- Explicit, one-shot metadata collection. Never calls a module, reads Source,
     -- captures GUI text/Value data, or changes inventory/automation readiness.
@@ -605,7 +871,7 @@ return function(C, env, cfg, log)
         r=child(r,name)
         return r and (r:IsA('RemoteFunction') or r:IsA('RemoteEvent')) and r or nil
     end
-    function A:busy() return env.K_AA_NETWORK_PENDING~=nil end
+    function A:busy() return env.K_AA_NETWORK_PENDING~=nil or env.K_AA_CLIENT_CACHE_PENDING~=nil end
     function A:issue(kind,args)
         if not self.alive or self:busy() then return false,'Transport busy/closed' end
         local remote
@@ -642,6 +908,12 @@ return function(C, env, cfg, log)
         return true
     end
     function A:poll()
+        local cache=env.K_AA_CLIENT_CACHE_PENDING
+        if cache and not cache.expired and os.clock()-cache.at>8 then
+            cache.expired=true;self.cacheDone=true
+            self.cacheReport='CLIENT CACHE READER: timeout; pending cache request remains locked; no retry'
+            return self.cacheReport
+        end
         local m=env.K_AA_NETWORK_PENDING
         if m and not m.expired and os.clock()-m.at>8 then
             m.expired=true
@@ -775,7 +1047,7 @@ return function(C, env, cfg, log)
         if #p.entries==0 then return nil,'Place your team manually first' end
         return p
     end
-    function A:close() self.alive=false end
+    function A:close() self.alive=false;self.clientService=nil;self.clientBinding=nil end
     return A
 end
 
@@ -883,6 +1155,8 @@ return function(app)
     label('RUKIA',function() return app:objectiveText() end)
     label('RUKIA',function() return app:walletText() end)
     button('RUKIA','REFRESH EXPOSED INVENTORY',function() app:refreshInventory() end)
+    button('RUKIA','READ CLIENT CACHE + COPY REPORT',function() app:readClientCache() end)
+    label('RUKIA','Experimental manual cache reader. Open the game’s Collection first. It reads existing service tables through the reported-loaded Loader. Delta cache isolation is unverified: native require may execute Loader code. The reader makes no explicit service initializer/getter calls.')
     button('RUKIA','SELECT NEXT OWNED RUKIA',function() app:nextRukia() end)
     button('RUKIA',function() return 'STOP GOAL: '..app.cfg.goal end,function()
         app:cycle('goal',{'Acquire','Trait','Stats','Evolution','Build'})
@@ -1014,6 +1288,7 @@ function app:unit() return C.chooseRukia((self.snapshot or {}).owned,self.cfg.se
 function app:ownershipText()
     local u=self:unit()
     if not u then return 'RUKIA OWNERSHIP: UNKNOWN\nThe exposed inventory scan does not prove absence.' end
+    if u.statScope~='collection' then return 'RUKIA SEEN IN MATCH\nPermanent collection ownership remains unknown.' end
     return 'OWNED OBSERVED: '..(u.id=='rukia_2_evo' and 'Snow Reaper (Final)' or 'Snow Reaper (War)')..
         '\nData: '..fmt(u.statScope)..' | level/upgrade='..fmt(u.level)
 end
@@ -1035,9 +1310,16 @@ function app:traitText()
 end
 function app:statsText()
     local u=self:unit() or {}
+    local potential={}
+    for _,key in ipairs({'stat_damage','stat_attack_cooldown','stat_range'}) do
+        if type(u.potential)=='table' and u.potential[key]~=nil then
+            potential[#potential+1]=key..'='..fmt(u.potential[key])
+        end
+    end
     return 'DMG '..fmt(u.damage)..' ['..fmt(u.damageGrade)..']\nSPA '..fmt(u.spa)..' ['..fmt(u.spaGrade)..
         ']\nRANGE '..fmt(u.range)..' ['..fmt(u.rangeGrade)..']\nScope: '..fmt(u.statScope)..
-        '\nWorthiness: '..fmt(u.worthiness)..' | Stat Cubes: '..fmt(((self.snapshot or {}).resources or {}).StatCube)
+        '\nWorthiness: '..fmt(u.worthiness)..' | Stat Cubes: '..fmt(((self.snapshot or {}).resources or {}).StatCube)..
+        (#potential>0 and '\nUnclassified potential fields: '..table.concat(potential,', ') or '')
 end
 function app:evolutionText()
     local s=self.snapshot or {};local r=s.resources or {};local u=self:unit()
@@ -1074,9 +1356,18 @@ function app:refreshInventory()
     self.adapter:refreshInventory(os.clock());self.snapshot=self.adapter:observe(os.clock())
     self:notice('Refreshed '..#self.snapshot.owned..' exposed unit records; partial inventory only')
 end
+function app:readClientCache()
+    self.engine:stop('Manual experimental client-cache read','IDLE')
+    self:notice('Attempting one loaded-client cache read; spending remains unavailable')
+    local started,why=self.adapter:startClientCache()
+    self.awaitCacheCopy=started
+    if not started then self:notice(why);self:copyReport() end
+end
 function app:nextRukia()
     local list={}
-    for _,u in ipairs((self.snapshot or {}).owned or {}) do if C.isRukia(u.id) then list[#list+1]=u end end
+    for _,u in ipairs((self.snapshot or {}).owned or {}) do
+        if C.isRukia(u.id) and u.statScope=='collection' then list[#list+1]=u end
+    end
     if #list==0 then self:notice('No exact secret Rukia ID observed');return end
     local idx=0;for i,u in ipairs(list) do if u.uuid==cfg.selectedUuid then idx=i end end
     cfg.selectedUuid=list[idx%#list+1].uuid
@@ -1139,6 +1430,7 @@ function app:completeReport()
         self:ownershipText(),self:objectiveText(),self:walletText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
+        self.adapter.cacheReport or 'CLIENT CACHE READER: not attempted; use RUKIA → READ CLIENT CACHE + COPY REPORT',
         'Premium mutation endpoints: none. Dungeon navigation/chest automation: unavailable.',
         'Profile positions/costs: user-recorded. Path samples: observed enemy motion only.',
         'Legacy import: '..fmt(self.legacySummary),'EXPOSED EQUIPPED RECORDS (UUIDs omitted):'}
@@ -1153,7 +1445,7 @@ function app:completeReport()
     end
     out[#out+1]='Workspace containers (bounded): '..table.concat(names,', ')
     local diagnostic=self.adapter.pathDiagnostic
-    out[#out+1]=diagnostic and diagnostic.text or 'DATA PATH DIAGNOSTIC: not run; use REPORTS → SCAN DATA PATHS + COPY REPORT'
+    out[#out+1]=diagnostic and diagnostic.text or 'DATA PATH DIAGNOSTIC: optional metadata scan not run'
     out[#out+1]=self.log:text()
     return table.concat(out,'\n'):sub(1,65536)
 end
@@ -1214,6 +1506,9 @@ task.spawn(function()
             local now=os.clock();local s=app.adapter:observe(now);app.snapshot=s
             local failure=app.adapter:poll()
             if failure then app.engine:reject(failure);app:notice(failure) end
+            if app.awaitCacheCopy and app.adapter.cacheDone then
+                app.awaitCacheCopy=false;app:copyReport()
+            end
             app.recorder:observe(s)
             app.observedWins=app.recorder.wins;app.observedLosses=app.recorder.losses
             local roster={}

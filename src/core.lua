@@ -1,6 +1,6 @@
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.2'
+C.version = '6.0.3'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -19,6 +19,7 @@ function C.isRukia(id) return id=='rukia_2' or id=='rukia_2_evo' end
 function C.chooseRukia(units,uuid)
     for _,u in ipairs(units or {}) do if C.isRukia(u.id) and u.uuid==uuid then return u end end
     if type(uuid)=='string' and uuid~='' then return nil end
+    for _,u in ipairs(units or {}) do if C.isRukia(u.id) and u.statScope=='collection' then return u end end
     for _,u in ipairs(units or {}) do if C.isRukia(u.id) then return u end end
 end
 local consentKeys={routeConfirmed='routeContext',protocolConfirmed='protocolContext',replayFreeConfirmed='replayContext'}
@@ -31,6 +32,14 @@ function C.bindConsent(cfg,key,s)
 end
 local grades={['C-']=1,C=2,['C+']=3,['B-']=4,B=5,['B+']=6,['A-']=7,A=8,['A+']=9,
     ['S-']=10,S=11,['S+']=12,SS=13,SSS=14}
+function C.hasTrait(u,target)
+    if not u or type(target)~='string' or target=='' then return false end
+    if u.trait==target then return true end
+    if type(u.traits)=='table' then
+        for i=1,4 do if rawget(u.traits,i)==target then return true end end
+    end
+    return false
+end
 function C.statsMet(u,target)
     if not u or u.statScope~='collection' or not grades[target] then return false end
     for _,key in ipairs({'damageGrade','spaGrade','rangeGrade'}) do
@@ -43,7 +52,7 @@ function C.spendAllowed(p)
     if not p.verified or not p.fresh then return false,'Unverified or stale inventory/protocol' end
     if type(p.target)~='string' or p.target=='' then return false,'Target unknown' end
     if p.current==nil then return false,'Current result unknown' end
-    if p.current==p.target then return false,'Target protected' end
+    if C.hasTrait({trait=p.current,traits=p.currentTraits},p.target) then return false,'Target protected' end
     for _,k in ipairs({'cap','spent','cost','balance'}) do
         if not C.finite(p[k]) then return false,'Unknown resource/cost' end
     end
@@ -177,18 +186,18 @@ function C.recorder(log)
 end
 function C.goalMet(s,cfg)
     local u=C.chooseRukia(s.owned,cfg.selectedUuid)
-    if not u or not s.ownedAt or s.now-s.ownedAt>15 then return false end
+    if not u or u.statScope~='collection' or not s.ownedAt or s.now-s.ownedAt>15 then return false end
     if cfg.goal=='Acquire' then return true end
-    if cfg.goal=='Trait' then return u.trait==cfg.targetTrait end
+    if cfg.goal=='Trait' then return C.hasTrait(u,cfg.targetTrait) end
     if cfg.goal=='Stats' then return C.statsMet(u,cfg.targetGrade) end
     if cfg.goal=='Evolution' then return u.id=='rukia_2_evo' end
-    return u.id=='rukia_2_evo' and u.trait==cfg.targetTrait and C.statsMet(u,cfg.targetGrade)
+    return u.id=='rukia_2_evo' and C.hasTrait(u,cfg.targetTrait) and C.statsMet(u,cfg.targetGrade)
 end
 function C.plan(s,cfg)
     local u=C.chooseRukia(s.owned,cfg.selectedUuid)
-    if not u then return 'Acquire Snow Reaper (War)',
+    if not u or u.statScope~='collection' then return 'Acquire Snow Reaper (War)',
         'Historical route: Dungeon final chest. Confirm Update 21 reward table before spending a key. Pity/rate unknown.' end
-    if u.trait~=cfg.targetTrait then return 'Trait target: '..cfg.targetTrait,
+    if not C.hasTrait(u,cfg.targetTrait) then return 'Trait target: '..cfg.targetTrait,
         'Current='..tostring(u.trait or 'unknown')..'. Reroll protocol unavailable; manual rolls only, within your budget.' end
     if not C.statsMet(u,cfg.targetGrade) then return 'Stat target: '..cfg.targetGrade,
         'Inspect raw DMG/SPA/RNG and grades. Historical: build worthiness before rerolling; single-stat cubes preserve other stats.' end

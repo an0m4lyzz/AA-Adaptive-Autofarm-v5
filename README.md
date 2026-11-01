@@ -17,7 +17,7 @@ main.lua bundles local src modules; there is no secondary HTTP loader or externa
 | Feature | Status | Boundary |
 |---|---|---|
 | Rukia identity and selected-copy goals | Offline-tested logic | Historical secret IDs rukia_2 / rukia_2_evo; old rukia excluded. Live schema unknown. |
-| Inventory, traits, stats, material counts | Experimental observer | Direct player-replicated Instances; missing data stays unknown. Partial scans never prove absence. |
+| Inventory, traits, stats, material counts | Experimental observer | Player-replicated Instances or explicit client-cache reader; missing data stays unknown. Partial scans never prove absence. |
 | Progression checklist | Implemented, historical data | Acquisition → trait → stats → evolution. No fabricated pity or live price. |
 | Seven-tab dark touch GUI | Implemented; live untested | RUKIA, TRAITS, STATS, EVOLUTION, FARM, REPORTS, SETTINGS. |
 | Recorded placements/upgrades | Experimental | Exact equipped identity, stage, costs, position and new-model/upgrade feedback required. |
@@ -57,6 +57,18 @@ The user's lobby also exposed both _UNITS and wave 0. v6.0.1 checks observed lob
 The next live report reached the metadata budget before client services: repeated prompt GUIs, settings and static definitions consumed the scan. The diagnostic now visits observed src/client first, ranks session/profile/collection/service names within a bounded child list, skips prompt GUIs and settings expansion, and lists the observed gui/_R wrapper's immediate children. No GUI text or source is read. It inspects at most 256 child names per eligible folder and queues at most 48; the 180-node, 2.5-second and 30 KiB limits remain.
 
 Observed player/_stats NumberValue fields gold_amount, gem_amount and _resourceSummerPearls are now read into a separate account-balance display. The field resource is displayed with its meaning unverified; it is never silently used as match Yen. No owned/equipped inventory schema or live progression is certified by these additions.
+
+### v6.0.3: explicit client-cache reader
+
+The live v6.0.2 report confirmed the balance reader and opaque numeric client module names. Open the game's Collection once, then use **RUKIA → READ CLIENT CACHE + COPY REPORT**. Full Auto stays OFF. This attempts a different, experimental data path.
+
+The reader checks that the exact Loader appears in getloadedmodules, retrieves its export once, and inspects at most 32 upvalues each of existing init and load_client_service closures. Neither closure is invoked. It looks for existing named cached client-service wrappers structurally, without fixed upvalue indices. No service getter, initializer, arbitrary numeric module, remote, hook or GC enumeration is called. Missing capability/loaded status/schema reports unavailable without a fallback initializer.
+
+After connection, the retained registry entry and current session are read on normal four-second refreshes. UUID and slot aliases must agree; exposed owner mismatches are rejected. The parser reads equipment first and at most 400 additional ownership entries. Missing counts stay unknown; potential multipliers cannot become attack stats. A placed event tower cannot prove permanent collection ownership.
+
+**Native limitation:** Roblox caches require results per Luau environment. Delta cache isolation is unverified; require could execute Loader code despite it being reported loaded. The eight-second deadline rejects late results and preserves pending-operation locks, but cannot interrupt native calls or undo execution. This is a manual experimental action. Observation time does not establish server freshness. Compare returned units and counts with your Collection before testing combat.
+
+See [references and validation](docs/CLIENT-CACHE.md).
 
 ## Development
 
