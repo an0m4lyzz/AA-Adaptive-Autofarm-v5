@@ -1691,15 +1691,29 @@ local function scoreCard(raw)
     if any({'curse of shielding','shield','curse of armor','armr trait'}) then minus(36,'shields/armor') end
     if any({'curse of vamp','curse of regen','regeneration','enemies regenerate','enemy regen'}) then minus(42,'regeneration') end
     if any({'curse of health','enemy health','enemies get +','strong enemies','tank enemies'}) then minus(45,'enemy HP') end
+    -- Fool's Hunt has physical/magic resistance curses, not blessings.
+    -- Never treat these as a neutral 0-score choice.
+    local physicalResist=any({'enemy physical resist','enemies physical resist'})
+    local magicResist=any({'enemy magic resist','enemies magic resist'})
+    if physicalResist then minus(28,'enemy physical resist') end
+    if magicResist then minus(28,'enemy magic resist') end
+    if has('resistant enemies') and not physicalResist and not magicResist then
+        minus(45,'enemy resistance')
+    end
+    if has('spellproof enemies') and not magicResist then
+        minus(30,'enemy magic resistance')
+    end
     if any({'curse of eruption','curse of explosion','explosive death'}) then minus(52,'stuns on death') end
     if any({'curse of shopping','shop prices'}) then minus(12,'higher prices') end
     if any({'curse of money','hoard drops','reduced money'}) then minus(22,'reduced economy') end
     if any({'dodge','dodging','miss chance'}) then minus(32,'enemy dodge') end
     -- Reward multipliers may make curses worthwhile for a heavily overpowered team.
-    if any({'event currency','event reward','portal chance','drop chance','stars per wave','candies per wave'}) then
+    if any({'event currency','event reward','portal chance','drop chance','stars per wave','candies per wave',
+        'aprilcoins','april coins'}) then
         local pct=tonumber(t:match('currency[^%%]*%+(%d+)%%')) or
                   tonumber(t:match('reward[^%%]*%+(%d+)%%')) or
                   tonumber(t:match('drop[^%%]*%+(%d+)%%')) or
+                  tonumber(t:match('%+(%d+)%%%s*april%s*coins')) or
                   tonumber(t:match('(%d+)%%[^|]-currency'))
         local gain=math.clamp((pct or 15)*0.35,5,35)
         plus(gain,'event reward')
@@ -1792,7 +1806,7 @@ end
 -- Clipboard is just the latest report; local file is the safer backup when supported.
 local REPORT_FILE='K_AA_AutoReport_'..tostring(LP.UserId)..'_'..tostring(game.PlaceId)..'.txt'
 local reporter={active=false,closed=false,folder=nil,lines={},seenCards={},
-    seenBosses={},seenThreats={},lastWave=-1,lastCardsAt=0,lastEnemiesAt=0,
+    seenBosses={},seenThreats={},seenConfirms={},lastWave=-1,lastCardsAt=0,lastEnemiesAt=0,
     diskCache=nil,session=0,lastTick=0,filesOK=false}
 local function reportText()
     return table.concat(reporter.lines,'\n')
@@ -1844,19 +1858,38 @@ end
 local function resultText()
     local pgui=LP:FindFirstChild('PlayerGui')
     local result=pgui and pgui:FindFirstChild('ResultsUI')
-    if not result then return 'Unknown result (no visible result panel)' end
+    if not result or not result.Enabled then
+        return 'Unconfirmed (no active results panel)'
+    end
+    -- Hidden template labels can contain both VICTORY and DEFEAT.
+    -- Only use visible descendants, and never trust demo placeholder values.
     local words={}
     for _,x in ipairs(result:GetDescendants()) do
-        if (x:IsA('TextLabel') or x:IsA('TextButton')) and #words<35 then
+        if (x:IsA('TextLabel') or x:IsA('TextButton'))
+            and visible(x) and #words<35 then
             local word=cleanText(x.Text)
             if #word>0 and #word<=100 then words[#words+1]=word end
         end
     end
     local desc=table.concat(words,' | '):sub(1,450)
-    local lowerDesc=desc:lower()
-    local status=lowerDesc:find('victory',1,true) and 'Victory'
-        or (lowerDesc:find('defeat',1,true) or lowerDesc:find('failed',1,true)) and 'Defeat'
-        or 'Unconfirmed'
+    local low=desc:lower()
+    local victory=low:find('victory',1,true)~=nil
+    local defeat=low:find('defeat',1,true)~=nil or low:find('failed',1,true)~=nil
+    local placeholder=low:find('999999',1,true)~=nil
+        or low:find('1234567890',1,true)~=nil
+    local status='Unconfirmed'
+    if not placeholder then
+        if defeat and not victory then status='Defeat'
+        elseif victory and not defeat then status='Victory' end
+    end
+    -- Fool's Hunt is a 30-wave run. A visible victory template before wave 30
+    -- is not evidence of a clear, even if it is the only detected label.
+    local stage=string.lower(tostring((S.stageData or {}).name or ''))
+    if S.mode=='Event' and (S.map=='april2_event' or stage:find("fool",1,true))
+        and wave()<30 and status=='Victory' then status='Unconfirmed' end
+    if placeholder then
+        return status..' | placeholder result labels found; wave='..wave()
+    end
     return status..' | '..desc
 end
 local function unitSnapshot()
@@ -1877,7 +1910,7 @@ end
 local function startReport()
     reporter.active=true;reporter.closed=false
     reporter.folder=WS:FindFirstChild('_UNITS')
-    reporter.lastWave=-1;reporter.seenCards={};reporter.seenBosses={};reporter.seenThreats={}
+    reporter.lastWave=-1;reporter.seenCards={};reporter.seenBosses={};reporter.seenThreats={};reporter.seenConfirms={}
     reporter.lastCardsAt=0;reporter.lastEnemiesAt=0
     reporter.session=reporter.session+1
     reporter.lines={}
@@ -1957,10 +1990,440 @@ local function tickReporter()
         if ok and type(cards)=='table' and #cards>=2 and #cards<=5 then
             local choiceLines={};local ids={}
             for _,card in ipairs(cards) do
-                local label=tostring(card.text or ''):sub(1,340)
+                local rawLabel=tostring(card.text or ''):sub(1,340)
+                local label=rawLabel:gsub('%s*|%s*[Cc]onfirm%s*',''):gsub('%s+
+            table.sort(ids)
+            local key=tostring(w)..'|'..table.concat(ids,'<>')
+            if not reporter.seenCards[key] then
+                reporter.seenCards[key]=true
+                recordLine('CARDS','choices='..#cards..
+                    ' | '..table.concat(choiceLines,' || '),true)
+            end
+        end
+    end
+    if finished then finishReport('Result screen detected') end
+end
+-- ================== END HANDS-FREE RUN REPORTER ==================
+
+-- Compact, scrollable mobile UI (no dependencies).
+local parent=LP:WaitForChild('PlayerGui')
+if type(gethui)=='function' then pcall(function() parent=gethui() end) end
+gui=Instance.new('ScreenGui')
+gui.Name='K_AA_V5_GUI';gui.ResetOnSpawn=false;gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling;gui.Parent=parent
+S.gui=gui
+local function mk(class,props,p)
+    local item=Instance.new(class)
+    for k,v in pairs(props) do item[k]=v end
+    item.Parent=p
+    return item
+end
+local C={bg=Color3.fromRGB(17,22,32),button=Color3.fromRGB(43,53,69),
+    active=Color3.fromRGB(30,122,98),muted=Color3.fromRGB(76,83,94),
+    text=Color3.fromRGB(244,246,251),focus=Color3.fromRGB(122,202,241)}
+local root=mk('Frame',{Size=UDim2.fromOffset(318,442),Position=UDim2.new(.5,-159,.5,-221),
+    BackgroundColor3=C.bg,BorderSizePixel=0,Active=true},gui)
+mk('UICorner',{CornerRadius=UDim.new(0,12)},root)
+local header=mk('TextLabel',{Size=UDim2.new(1,-48,0,40),Text='[K] AA SMART COUNTERS v5',
+    BackgroundTransparency=1,TextColor3=C.text,TextSize=14,Font=Enum.Font.GothamBold,Active=true},root)
+local shrink=mk('TextButton',{Size=UDim2.fromOffset(34,32),Position=UDim2.new(1,-39,0,4),
+    Text='_',BackgroundColor3=C.button,TextColor3=C.text,Font=Enum.Font.GothamBold,TextSize=20},root)
+local info=mk('TextLabel',{Size=UDim2.new(1,-18,0,41),Position=UDim2.fromOffset(9,395),
+    BackgroundTransparency=1,TextWrapped=true,TextColor3=C.focus,
+    TextSize=11,Font=Enum.Font.Gotham,Text=S.status},root)
+S.statusText=info
+local scroll=mk('ScrollingFrame',{Position=UDim2.fromOffset(8,44),Size=UDim2.new(1,-16,0,344),
+    BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,CanvasSize=UDim2.fromOffset(0,750)},root)
+local flow=mk('UIListLayout',{Padding=UDim.new(0,6),FillDirection=Enum.FillDirection.Vertical,
+    SortOrder=Enum.SortOrder.LayoutOrder},scroll)
+flow:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+    scroll.CanvasSize=UDim2.fromOffset(0,flow.AbsoluteContentSize.Y+12)
+end)
+local order=0
+local function button(txt,cb)
+    order=order+1
+    local b=mk('TextButton',{LayoutOrder=order,Size=UDim2.new(1,-4,0,38),
+        Text=txt,BackgroundColor3=C.button,BorderSizePixel=0,TextColor3=C.text,
+        Font=Enum.Font.GothamSemibold,TextSize=12,AutoButtonColor=true},scroll)
+    mk('UICorner',{CornerRadius=UDim.new(0,7)},b)
+    b.MouseButton1Click:Connect(function() if S.alive then cb(b) end end)
+    return b
+end
+local main
+main=button('START FULL AUTO (OFF)',function(b)
+    S.enabled=not S.enabled
+    b.Text=S.enabled and 'STOP FULL AUTO (RUNNING)' or 'START FULL AUTO (OFF)'
+    b.BackgroundColor3=S.enabled and C.active or C.button
+    if S.enabled then
+        if isMatch() then resetMatch() end
+        note('AUTO ON: '..S.mode..' | placing, upgrading, replaying')
+    else
+        run.pending=nil
+        note('AUTO STOPPED. Saved macros retained.')
+    end
+end)
+button('MODE: '..S.mode..' (tap to change)',function(b)
+    local idx=table.find(modes,S.mode) or 1
+    S.mode=modes[idx%#modes+1]
+    b.Text='MODE: '..S.mode..' (tap to change)'
+    if isMatch() then S.map=mapId();run.key=currentKey();run.savedIndex=1 end
+    saveSettings();note('Selected '..S.mode)
+end)
+local function toggle(label,key)
+    local b
+    b=button('',function()
+        S.options[key]=not S.options[key]
+        b.Text=label..': '..(S.options[key] and 'ON' or 'OFF')
+        b.BackgroundColor3=S.options[key] and C.active or C.muted
+        saveSettings()
+    end)
+    b.Text=label..': '..(S.options[key] and 'ON' or 'OFF')
+    b.BackgroundColor3=S.options[key] and C.active or C.muted
+    return b
+end
+toggle('AUTO PLACE (no recording)','place')
+toggle('SMART SPOTS / UNIT ROLES','smartPlace')
+toggle('REUSE generated map macros','savedMacros')
+toggle('AUTO UPGRADE','upgrade')
+toggle('SMART UPGRADE PRIORITIES','smartUpgrade')
+toggle('AUTO ABILITIES','abilities')
+toggle('AUTO START WAVES','start')
+toggle('AUTO SKIP WAVES','skip')
+toggle('AUTO REPLAY','replay')
+toggle('PRIORITIZE MONEY UNITS','farming')
+toggle('CARD ADVISOR','cardAdvisor')
+toggle('AUTO-LOG RUN (no autofarm needed)','autoReport')
+toggle('AUTO-COPY CARDS / BOSSES / END','autoCopyReport')
+button('COPY COMPLETE AUTO REPORT',function()
+    if copyReport() then note('Full run report copied; '..#reporter.lines..' entries')
+    else note('Clipboard unavailable; see '..REPORT_FILE..' or executor console'); print(reportText()) end
+end)
+button('SHOW AUTO REPORT STATUS',function()
+    note('Reporter '..(S.options.autoReport and 'ON' or 'OFF')..' | lines='..#reporter.lines..
+        ' | local file='..tostring(reporter.filesOK)..' | '..REPORT_FILE)
+end)
+toggle('AUTO PICK CARDS (experimental)','autoCards')
+toggle('CAUTIOUS WAVE SKIP','cautiousSkip')
+toggle('SCOUT MAP / ENEMY COUNTERS','stageScout')
+toggle('AUTO EQUIP RECOMMENDED (learn first)','autoEquip')
+button('SCAN ALL OWNED UNITS (bench included)',function()
+    scanEquipped()
+    local items,touched=scanOwned()
+    recommendTeam()
+    note('Owned scan: '..#items..' distinct units; '..touched..' records inspected')
+end)
+button('RECOMMEND BEST TEAM FOR THIS MAP',function()
+    if isMatch() then S.map=mapId();stageData() end
+    scanEquipped();scanOwned();local list=recommendTeam()
+    note('Team plan generated for '..S.map..' ('..#list..' units). COPY COUNTER REPORT to inspect.')
+end)
+button('COPY MAP / BOSSES / TEAM COUNTERS',function()
+    if isMatch() then v5ScanStage() end
+    recommendTeam()
+    local data=S.stageData or {}
+    local flags,report=stageCounters()
+    local learned=threatRecord()
+    local knownBosses={}
+    for boss in pairs(learned.bosses) do
+        if #knownBosses>=12 then break end
+        knownBosses[#knownBosses+1]=boss..' (wave '..tostring(learned.bossWaves[boss] or '?')..')'
+    end
+    local lines={'[K] AA V5 MAP REPORT | map='..S.map..' mode='..S.mode..' wave='..wave(),
+        'stage='..tostring(data.name)..' world='..tostring(data.world),
+        'known map modifiers='..table.concat(data.rawKeys or {},'; '),
+        'enemy live='..tostring((S.counterReport or {}).count or 0),
+        'live bosses='..table.concat(S.bossNames or {},', '),
+        'previously observed bosses='..table.concat(knownBosses,', '),
+        'next known boss wave='..tostring((S.counterReport or {}).nextKnownBossWave or 'unknown'),
+        'counter evidence='..table.concat(report,', '),
+        'owned='..#S.owned..' equipped='..#S.inventory,
+        'autoEquip='..tostring(S.options.autoEquip)..' equipRemoteVerified='..tostring(S.equipTemplate and S.equipTemplate.verified),
+        'BEST TEAM (heuristic; unknown stats excluded, not invented):'}
+    for _,line in ipairs(S.teamReport) do lines[#lines+1]=line end
+    lines[#lines+1]='Owned examples:'
+    for i,u in ipairs(S.owned) do
+        if i>20 then break end
+        lines[#lines+1]=i..') '..u.id..' type='..tostring(u.attack or '?')..
+            ' element='..tostring(u.element or '?')..' trait='..tostring(u.trait or '?')..
+            ' damage='..tostring(u.damage or '?')..' spa='..tostring(u.spa or '?')
+    end
+    lines[#lines+1]='NOTE: unknown boss/element data is unknown; live scouting & previous scans only.'
+    local txt=table.concat(lines,'\n')
+    print(txt)
+    if type(setclipboard)=='function' then pcall(function() setclipboard(txt) end);note('Map and team report copied')
+    else note('Report printed in executor console') end
+end)
+button('LEARN EQUIP ACTION (manual once)',function()
+    if not captureOK then note('Hook unavailable: '..tostring(captureErr));return end
+    scanEquipped();scanOwned()
+    S.equipLearning=true;S.equipLearningEnds=os.clock()+30
+    note('In lobby, equip a unit normally within 30 sec. Mapping is saved only after verification.')
+end)
+button('STOP EQUIP LEARNING',function()
+    S.equipLearning=false
+    note('Equip learning stopped')
+end)
+button('CARD GOAL: '..S.goal..' (tap to change)',function(b)
+    local goals={'Safe','Balanced','Rewards'}
+    local n=table.find(goals,S.goal) or 2
+    S.goal=goals[n%#goals+1]
+    b.Text='CARD GOAL: '..S.goal..' (tap to change)'
+    saveSettings();note('Card goal changed to '..S.goal)
+end)
+button('COPY CARD CHOICES / DEBUG',function()
+    local result={'AA SMART CARD SCAN | mode='..S.mode..' map='..S.map..' wave='..wave()..
+        ' goal='..S.goal..' | '..S.cardStatus}
+    for i,v in ipairs(S.cardSnapshot) do
+        if i>8 then break end
+        result[#result+1]=i..') SCORE='..v.score..' RISK='..v.risk..
+            ' | '..v.text:sub(1,350)..' | '..v.reason
+    end
+    local txt=table.concat(result,'\n')
+    if type(setclipboard)=='function' then pcall(function() setclipboard(txt) end)
+        note('Copied card report: '..#S.cardSnapshot..' choices')
+    else print(txt);note('Card report printed in console') end
+end)
+local queueBtn
+queueBtn=button('AUTO EVENT REJOIN: OFF',function(b)
+    S.autoQueue=not S.autoQueue
+    b.Text='AUTO EVENT REJOIN: '..(S.autoQueue and 'ON' or 'OFF')
+    b.BackgroundColor3=S.autoQueue and C.active or C.muted
+    note('Event rejoin '..(S.autoQueue and 'armed' or 'disabled')..' ('..#S.eventQueue..' learned actions)')
+end)
+button('LEARN EVENT JOIN (one-time setup)',function()
+    if not captureOK then note('Cannot learn queue: '..tostring(captureErr));return end
+    S.eventQueue={}
+    S.queueLearning=true
+    S.queueLearningEnds=os.clock()+25
+    saveSettings()
+    note('NOW select/join your event normally within 25 seconds. Then tap FINISH.')
+end)
+button('FINISH LEARNING / SAVE EVENT JOIN',function()
+    S.queueLearning=false
+    saveSettings()
+    note('Saved '..#S.eventQueue..' event queue actions. Toggle AUTO EVENT REJOIN.')
+end)
+button('PLACEMENTS PER UNIT: '..S.options.maxEach,function(b)
+    S.options.maxEach=S.options.maxEach%5+1
+    b.Text='PLACEMENTS PER UNIT: '..S.options.maxEach
+    saveSettings()
+end)
+button('MAX TOTAL PLACEMENTS: '..S.options.maxTotal,function(b)
+    S.options.maxTotal=({8,12,16,20,24})[(table.find({8,12,16,20,24},S.options.maxTotal) or 3)%5+1]
+    b.Text='MAX TOTAL PLACEMENTS: '..S.options.maxTotal
+    saveSettings()
+end)
+button('SCAN EQUIPPED UNITS NOW',function()
+    local units=scanEquipped()
+    note('Read '..#units..' equipped units; open COPY UNIT REPORT for details')
+end)
+button('COPY UNIT / PLACEMENT / UPGRADE REPORT',function()
+    local lines={'AA v5 adaptive counter report (no full UUIDs)',
+        'mode='..S.mode..' map='..S.map..' wave='..wave()..
+        ' yen='..tostring(scanMoney() or 'unavailable')..
+        ' path_samples='..#run.pathSamples..
+        ' enemies='..tostring((S.threatReport or {}).count or 0)..
+        ' air='..tostring((S.threatReport or {}).air or 0)}
+    for _,inv in ipairs(S.inventory) do
+        local live=bestLiveMatch(inv)
+        local dps=(live and live.dps) or (inv.damage and inv.spa and inv.spa>0 and inv.damage/inv.spa)
+        lines[#lines+1]='slot '..inv.slot..' '..inv.id..' role='..inv.role..
+            ' trait='..tostring(inv.trait)..' type='..tostring(inv.attack)..
+            ' dps='..tostring(dps or '?')..
+            ' range='..tostring((live and live.range) or inv.range or '?')..
+            ' deploy='..tostring(inv.cost or '?')..
+            ' count='..countForSlot(inv.slot)..'/'..placementCap(inv)
+    end
+    local emitted=0
+    for _,model in ipairs(ownUnits()) do
+        if emitted>=3 then break end
+        local stats=model:FindFirstChild('_stats')
+        if stats then
+            local keys={}
+            for _,child in ipairs(stats:GetChildren()) do
+                if #keys>=26 then break end
+                if child:IsA('ValueBase') then keys[#keys+1]=child.Name end
+            end
+            table.sort(keys)
+            lines[#lines+1]='VISIBLE STAT KEYS ('..model.Name..'): '..table.concat(keys,',')
+            emitted=emitted+1
+        end
+    end
+    lines[#lines+1]='PLACEMENT PRIORITY:'
+    for _,line in ipairs(S.planReport or {}) do lines[#lines+1]=line end
+    lines[#lines+1]='UPGRADE PRIORITY:'
+    for _,line in ipairs(S.upgradeReport or {}) do lines[#lines+1]=line end
+    lines[#lines+1]='NOTE: missing values=?; predicted positions must be verified by game.'
+    local txt=table.concat(lines,'\n')
+    print(txt)
+    if type(setclipboard)=='function' then pcall(function() setclipboard(txt) end);note('Planner report copied')
+    else note('Planner report in Delta console') end
+end)
+button('COPY DIAGNOSTICS',function()
+    local remotes={}
+    local folder=endpoints()
+    if folder then
+        for _,r in ipairs(folder:GetChildren()) do
+            if r:IsA('RemoteFunction') or r:IsA('RemoteEvent') then
+                table.insert(remotes,r.Name)
+            end
+        end
+    end
+    table.sort(remotes)
+    local inv={}
+    for _,v in ipairs(S.inventory) do table.insert(inv,v.slot..'='..v.id..'#'..v.uuid:sub(1,6)) end
+    local txt='AA v5 | place='..game.PlaceId..' | map='..S.map..' | mode='..S.mode..
+        ' | wave='..wave()..' | match='..tostring(isMatch())..
+        ' | units='..#ownUnits()..' | equipped='..table.concat(inv,',')..
+        ' | placements='..totalPlaced()..' | saved='..#profile().steps..
+        ' | joinLearned='..#S.eventQueue..' | hook='..tostring(captureOK)..
+        ' | remotes='..table.concat(remotes,',')
+    print('[K] '..txt)
+    if type(setclipboard)=='function' then pcall(function() setclipboard(txt) end);note('Diagnostics copied')
+    else note('Diagnostics in Delta console (no clipboard)') end
+end)
+button('CLEAR THIS MAP MACRO',function()
+    S.maps[currentKey()]={steps={}}
+    run.savedIndex=1
+    saveSettings();note('Cleared saved placements for '..currentKey())
+end)
+button('STOP + CLOSE GUI',function() S.stop() end)
+local moving=false;local initial,at
+header.InputBegan:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then
+        moving=true;initial=input.Position;at=root.Position
+        input.Changed:Connect(function()
+            if input.UserInputState==Enum.UserInputState.End then moving=false end
+        end)
+    end
+end)
+UIS.InputChanged:Connect(function(input)
+    if moving and (input.UserInputType==Enum.UserInputType.Touch or
+        input.UserInputType==Enum.UserInputType.MouseMovement) then
+        local d=input.Position-initial
+        root.Position=UDim2.new(at.X.Scale,at.X.Offset+d.X,at.Y.Scale,at.Y.Offset+d.Y)
+    end
+end)
+shrink.MouseButton1Click:Connect(function()
+    local open=scroll.Visible
+    scroll.Visible=not open;info.Visible=not open
+    root.Size=open and UDim2.fromOffset(318,42) or UDim2.fromOffset(318,442)
+    shrink.Text=open and '+' or '_'
+end)
+function S.stop()
+    S.enabled=false;S.alive=false;S.queueLearning=false
+    if reporter.active then pcall(function() finishReport('Script closed manually') end) end
+    pcall(saveSettings)
+    if S.gui then S.gui:Destroy() end
+    if ENV.K_AA_V5==S then ENV.K_AA_V5=nil end
+end
+
+-- A conservative tick: at most one placement every 4.5 seconds, one upgrade/3s.
+-- Lobby attempts happen only after learning an actual join request.
+task.spawn(function()
+    while S.alive do
+        task.wait(0.45)
+        if S.equipLearning and os.clock()>=S.equipLearningEnds then
+            S.equipLearning=false;note('Equip learning expired (nothing verified).')
+        end
+        if S.queueLearning and os.clock()>=S.queueLearningEnds then
+            S.queueLearning=false
+            saveSettings()
+            note('Event learning ended. Captured '..#S.eventQueue..' actions.')
+        end
+        if S.options.autoReport and os.clock()-reporter.lastTick>=0.7 then
+            reporter.lastTick=os.clock()
+            local ok,err=pcall(tickReporter)
+            if not ok and os.clock()-(reporter.lastErrorAt or 0)>15 then
+                reporter.lastErrorAt=os.clock()
+                recordLine('RECORDER ERROR',tostring(err):sub(1,250),false)
+            end
+        elseif not S.options.autoReport and reporter.active then
+            pcall(function() finishReport('Auto-report turned off') end)
+        end
+        if S.enabled then
+            local now=os.clock()
+            if isMatch() then
+                local folder=WS:FindFirstChild('_UNITS')
+                local w=wave()
+                if run.unitsFolder~=folder or not run.active or
+                    (w<=1 and run.waveMax>=3 and not isFinished()) then
+                    resetMatch()
+                end
+                run.waveMax=math.max(run.waveMax,w)
+                if not isFinished() then
+                    observePath()
+                    if now-run.unitScanAt>30 and #S.inventory==0 then
+                        run.unitScanAt=now;scanEquipped()
+                    end
+                end
+                if isFinished() then
+                    if not run.hadResult then
+                        run.hadResult=true;S.run=S.run+1
+                        saveSettings();note('Completed run #'..S.run..' | '..S.map)
+                    end
+                    if S.options.replay and now-run.lastReplay>9 then
+                        run.lastReplay=now
+                        task.spawn(function() call('set_game_finished_vote','replay') end)
+                    end
+                else
+                    if not isStarted() and S.options.start and now-run.lastStart>8 then
+                        run.lastStart=now
+                        task.spawn(function() call('vote_start') end)
+                    end
+                    if isStarted() then
+                        if S.options.cardAdvisor and now-(S.lastCardScan or 0)>1.5 then
+                            S.lastCardScan=now
+                            pcall(tickCards)
+                        end
+                        if S.options.place then placeOne() end
+                        if S.options.upgrade and now-run.lastUpgrade>3 then
+                            run.lastUpgrade=now;upgradeOne()
+                        end
+                        if S.options.abilities and now-run.lastAbility>4 then
+                            run.lastAbility=now;abilityOne()
+                        end
+                        if S.options.skip and (not S.options.cautiousSkip or (wave()<9 and #ownUnits()>=2)) and now-run.lastSkip>8 then
+                            run.lastSkip=now
+                            for _,name in ipairs({'vote_skip_wave','vote_skip','skip_wave'}) do
+                                if getRemote(name) then
+                                    task.spawn(function() call(name) end)
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            else
+                run.active=false
+                if S.options.autoEquip and S.equipTemplate and S.equipTemplate.verified then
+                    if now-(S.lastOwnedScan or 0)>50 then
+                        S.lastOwnedScan=now;scanEquipped();scanOwned();recommendTeam()
+                    end
+                    tryEquipTeam()
+                end
+                if S.autoQueue and S.mode=='Event' and #S.eventQueue>0 and now-run.lastQueue>35
+                    and (not S.options.autoEquip or not S.equipTemplate or (S.equipChanges or 0)>=6
+                      or (S.lastEquipAt or 0)==0 or now-S.lastEquipAt>10) then
+                    run.lastQueue=now
+                    note('Trying learned event matchmaking commands...')
+                    replayQueue()
+                end
+            end
+        end
+    end
+end)
+note('v5.1 loaded: AUTO-LOG ON by default, even with full autofarm OFF. Reports: '..REPORT_FILE),'')
                 local score=scoreCard(label)
                 choiceLines[#choiceLines+1]=label..' [estimated score='..score..']'
                 ids[#ids+1]=label
+                -- UI confirmation text suggests a selection, but is not server proof.
+                if rawLabel:lower():find('| confirm',1,true) then
+                    local confirmKey=tostring(w)..'|'..label
+                    if not reporter.seenConfirms[confirmKey] then
+                        reporter.seenConfirms[confirmKey]=true
+                        recordLine('POSSIBLE CARD CHOICE','confirmation visible for: '..label,false)
+                    end
+                end
             end
             table.sort(ids)
             local key=tostring(w)..'|'..table.concat(ids,'<>')
