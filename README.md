@@ -17,6 +17,19 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/an0m4lyzz/AA-Adaptive
 - Includes experimental event queue learning, card recommendations and replay support.
 
 
+## New: in-game card advice and big rewards (experimental)
+
+The **card controls are at the top of the mobile menu**, immediately after MODE.
+
+1. Keep **MODE: Event** and **START FULL AUTO: OFF** if you want to play Fool's Hunt normally.
+2. Keep **CARD ADVISOR: ON** (default). When card choices are visible, a floating green **PICK:** banner recommends a card, even if the menu is minimized.
+3. **AUTO CHOOSE BEST CARD** is OFF by default. Turn it ON if you want the script to try clicking a high-confidence card recommendation. It works independently of placement/upgrade autofarming.
+4. **CARD STRATEGY** cycles SAFE CLEAR, BALANCED, BIG REWARDS. **SET BIG REWARDS (APRILCOINS)** is a one-tap shortcut.
+
+**Big Rewards** assigns greater weight to visible AprilCoins bonuses; when several cards give the same bonus, it tends to prefer the lower-risk curse. It does **not** guarantee more currency, a clear, or the optimal choice. Aggressive curses can end a run sooner.
+
+**Limitations:** The card detection is based on client-visible GUI labels, and clicking depends on what Delta supports. Auto-clicking is attempted only for a limited number of readable choices with a scoring margin; close calls, high-risk options and target-specific spells are left for manual selection. A reported input attempt is not server confirmation. Verify behavior in a supervised run before relying on it.
+
 ## New in v5.1: automatic run reports
 
 You **do not need to start the autofarm** to record a normal Event run.
