@@ -18,6 +18,8 @@ Inspect current Rukia rewards, key costs/limits and Evolve recipe yourself. Hist
 
 For v6.0.1, first use **REPORTS → SCAN DATA PATHS + COPY REPORT** when all inventory fields remain unknown. The button stops combat, collects a bounded one-shot metadata report and copies the complete report automatically. Paste that result. A supported inventory path is still unknown until evidence identifies one; running the diagnostic does not establish farming readiness. Stage/Yen unknown in a detected lobby is expected. The report now includes observed context and place ID.
 
+In v6.0.2, the same button prioritizes the now-observed src/client tree instead of repeated prompt/settings entries. Compare Gold, Gems and SummerPearls with your on-screen account balances. The raw player/_stats/resource value has unverified meaning and cannot authorize match spending. These balance observations do not establish unit ownership. Leave Full Auto OFF while the inventory adapter remains unavailable.
+
 Use a low-stakes stage you can already clear. Historical signatures spawn_unit(uuid,CFrame), upgrade_unit_ingame(model), and set_game_finished_vote("replay") remain experimental. Endpoint existence is not payload verification.
 
 Place one affordable equipped unit manually. Wait for observed roster/stage. Tap RECORD CURRENT OWN PLACEMENTS. All towers must map to exact equipped UUIDs and IDs. Costs must be visible, or entered by equipped slot as comma-separated fallback values after checking them in game. Empty positions preserve slots. Costs are source-labeled and may differ under modifiers.

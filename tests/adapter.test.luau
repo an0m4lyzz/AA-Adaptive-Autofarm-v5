@@ -167,4 +167,66 @@ check('diagnostic redacts braced and prefixed UUID record names',function()
     assert(not d.text:find(uuid,1,true))
     assert(not d.text:find('12345678abcd1234abcd123456789012',1,true))
 end)
+check('observed account currency fields are readable without inventing match Yen',function()
+    local a,_,_,_,_,_,player=world();player.attrs={}
+    local gold=node('gold_amount','NumberValue');gold.Value=100
+    local gems=node('gem_amount','NumberValue');gems.Value=200
+    local pearls=node('_resourceSummerPearls','NumberValue');pearls.Value=300
+    local resource=node('resource','NumberValue');resource.Value=400
+    player.kids[#player.kids+1]=node('_stats','Folder',{}, {gold,gems,pearls,resource})
+    local s=a:observe(10)
+    assert(s.wallet.Gold==100 and s.wallet.Gems==200 and s.wallet.SummerPearls==300)
+    assert(s.walletSources.Gold=='player/_stats/gold_amount')
+    assert(s.rawResource==400 and s.cash==nil)
+end)
+check('wrong field types and absent currencies remain unknown',function()
+    local a,_,_,_,_,_,player=world()
+    local gems=node('gem_amount','StringValue');gems.Value='500'
+    player.kids[#player.kids+1]=node('_stats','Folder',{}, {gems})
+    local s=a:observe(10)
+    assert(s.wallet.Gems==nil and s.wallet.SummerPearls==nil)
+end)
+check('client services survive crowded GUI settings and static data folders',function()
+    local a,_,_,_,rs,gui,player=world()
+    local settings,data,prompts={},{},{}
+    for i=1,100 do
+        settings[i]=node('option'..i,'BoolValue');data[i]=node('Definition'..i,'ModuleScript')
+        prompts[i]=node('ProximityPromptCustomUI','BillboardGui')
+    end
+    player.kids[#player.kids+1]=node('_settings','Folder',{},settings);gui.kids=prompts
+    local client=node('client','Folder',{}, {node('Services','Folder',{}, {node('ClientService','ModuleScript')})})
+    rs.kids={node('src','Folder',{}, {node('Data','Folder',{},data),client})}
+    local d=a:probePaths()
+    assert(d.text:find('replicated/src/client/Services/ClientService',1,true))
+    assert(not d.text:find('ProximityPromptCustomUI',1,true))
+    assert(not d.text:find('player/_settings/option',1,true))
+    assert(d.visited<=180)
+end)
+check('client inventory and session module names precede unrelated entries',function()
+    local a,_,_,_,rs=world();local entries={}
+    for i=1,70 do entries[i]=node('Effect'..i,'Folder') end
+    entries[#entries+1]=node('SessionService','ModuleScript')
+    rs.kids={node('src','Folder',{}, {node('client','Folder',{},entries)})}
+    local d=a:probePaths()
+    assert(d.text:find('replicated/src/client/SessionService',1,true))
+end)
+check('observed GUI wrapper model is listed without reading GUI text',function()
+    local a,_,_,_,_,gui=world()
+    gui.kids={node('_R','Model',{}, {node('Collection','ScreenGui')})}
+    local d=a:probePaths()
+    assert(d.text:find('gui/_R/Collection',1,true))
+end)
+check('near-capacity diagnostic keeps the highest priority client descendants',function()
+    local a,_,_,_,rs=world()
+    local branch=node('SessionService','ModuleScript')
+    for _,key in ipairs({'AProfile','ACollection','AService','client'}) do
+        local kids={branch}
+        for i=1,47 do kids[#kids+1]=node('ZEffect'..i,'ModuleScript') end
+        branch=node(key,'Folder',{},kids)
+    end
+    rs.kids={node('src','Folder',{}, {branch})}
+    local d=a:probePaths()
+    assert(d.visited<=180 and d.truncated)
+    assert(d.text:find('replicated/src/client/AService/ACollection/AProfile/SessionService',1,true))
+end)
 print('All '..n..' adapter tests passed')

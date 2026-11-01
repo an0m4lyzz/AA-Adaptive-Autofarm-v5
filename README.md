@@ -52,6 +52,12 @@ If the inventory refresh returns zero exposed records, use **REPORTS → SCAN DA
 
 The user's lobby also exposed both _UNITS and wave 0. v6.0.1 checks observed lobby markers before labeling those objects as a match. Selected Dungeon mode still does not prove that the player is in a Dungeon.
 
+### v6.0.2: prioritize the observed client tree
+
+The next live report reached the metadata budget before client services: repeated prompt GUIs, settings and static definitions consumed the scan. The diagnostic now visits observed src/client first, ranks session/profile/collection/service names within a bounded child list, skips prompt GUIs and settings expansion, and lists the observed gui/_R wrapper's immediate children. No GUI text or source is read. It inspects at most 256 child names per eligible folder and queues at most 48; the 180-node, 2.5-second and 30 KiB limits remain.
+
+Observed player/_stats NumberValue fields gold_amount, gem_amount and _resourceSummerPearls are now read into a separate account-balance display. The field resource is displayed with its meaning unverified; it is never silently used as match Yen. No owned/equipped inventory schema or live progression is certified by these additions.
+
 ## Development
 
 ```bash

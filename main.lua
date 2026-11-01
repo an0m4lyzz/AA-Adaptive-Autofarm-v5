@@ -5,7 +5,7 @@ local __modules = {}
 __modules.core = (function()
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.1'
+C.version = '6.0.2'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -343,6 +343,11 @@ return function(C, env, cfg, log)
         local v=scalar(p,keys)
         return (type(v)=='string' or type(v)=='number') and tostring(v) or nil
     end
+    local function numericValue(p,key)
+        local v=child(p,key)
+        if not v or not (v:IsA('NumberValue') or v:IsA('IntValue')) then return nil end
+        return C.finite(v.Value) and v.Value or nil
+    end
     local function point(m)
         local p=child(m,'_hitbox') or m.PrimaryPart
         if p and p:IsA('BasePart') then return {p.Position.X,p.Position.Y,p.Position.Z} end
@@ -439,6 +444,7 @@ return function(C, env, cfg, log)
                 'Values, source code and UUID record names are omitted. No modules or remotes are invoked.',
                 'Instance paths only; this cannot establish whether inventory lives in client Lua tables.'}
             local queue,seen={},{}
+            local cursor
             local visited,truncated=0,false
             local uuidPattern=string.rep('%x',8)..'%-'..string.rep('%x',4)..'%-'..
                 string.rep('%x',4)..'%-'..string.rep('%x',4)..'%-'..string.rep('%x',12)
@@ -455,9 +461,19 @@ return function(C, env, cfg, log)
             local function push(item,label,depth,limit,group)
                 if not item or seen[item] then return end
                 if #queue>=180 then truncated=true;return end
-                seen[item]=true;queue[#queue+1]={item=item,label=label,depth=depth,limit=limit,group=group}
+                seen[item]=true
+                local row={item=item,label=label,depth=depth,limit=limit,group=group}
+                -- Finish the observed client subtree before optional metadata
+                -- can consume the shared budget. This does not execute modules.
+                if group=='client' and cursor then table.insert(queue,cursor,row)
+                else queue[#queue+1]=row end
             end
             local scripts=child(LP,'PlayerScripts');local gui=child(LP,'PlayerGui')
+            local src=child(RS,'src')
+            push(child(src,'client'),'replicated/src/client',0,4,'client')
+            push(child(src,'core'),'replicated/src/core',0,2,'replicated')
+            push(child(src,'Loader'),'replicated/src/Loader',0,1,'replicated')
+            push(child(gui,'_R'),'gui/_R',0,1,'wrapper')
             push(LP,'player',0,3,'player')
             push(scripts,'player/PlayerScripts',0,4,'scripts')
             push(RS,'replicated',0,3,'replicated')
@@ -475,11 +491,19 @@ return function(C, env, cfg, log)
                 end
                 return false
             end
+            local function rank(raw)
+                raw=raw:lower()
+                for _,term in ipairs({'clientservice','session','profile','collection','inventory','playerdata','replica'}) do
+                    if raw:find(term,1,true) then return 0 end
+                end
+                if raw:find('service',1,true) or raw:find('controller',1,true) or raw:find('loader',1,true) then return 1 end
+                return 2
+            end
             for _,p in ipairs({'player/owned_units','player/collection_profile_data/owned_units',
                 'player/_data/owned_units','player/collection/owned_units','player/_data/items'}) do
                 rows[#rows+1]='CANDIDATE '..p..': '..(path(p,true) and 'present' or 'missing')
             end
-            local cursor=1
+            cursor=1
             while cursor<=#queue do
                 if not self.alive or os.clock()-began>2.5 then truncated=true;break end
                 local q=queue[cursor];cursor+=1;visited+=1
@@ -496,18 +520,36 @@ return function(C, env, cfg, log)
                     (#keys>0 and table.concat(keys,',') or 'none')):sub(1,260)
                 local container=item:IsA('Folder') or item:IsA('Configuration')
                     or item==LP or item==scripts or item==RS or item==gui
-                    or (q.group=='scripts' and item:IsA('ModuleScript'))
+                    or ((q.group=='scripts' or q.group=='client') and item:IsA('ModuleScript'))
+                    or (q.group=='wrapper' and item==child(gui,'_R'))
                 local descend=q.group~='replicated' or q.depth==0 or relevant(item.Name)
+                if q.group=='player' and item.Name=='_settings' then descend=false end
+                if q.group=='scripts' and item.Name=='PlayerModule' then descend=false end
                 if container and descend and q.depth<q.limit then
                     local childrenOK,kids=pcall(function() return item:GetChildren() end)
                     if childrenOK then
-                        if #kids>48 then truncated=true end
+                        local selected={}
                         for i,v in ipairs(kids) do
-                            if i>48 then break end
+                            if i>256 then truncated=true;break end
                             local skip=(q.group=='player' and (v==gui or v==scripts or v==LP.Character))
-                            if not skip and v.Name~='K_AA_Rukia_V6' then
-                                push(v,q.label..'/'..name(v.Name),q.depth+1,q.limit,q.group)
-                            end
+                            skip=skip or v:IsA('BillboardGui') or v:IsA('SurfaceGui')
+                            if not skip and v.Name~='K_AA_Rukia_V6' then selected[#selected+1]=v end
+                        end
+                        if q.group=='client' then
+                            table.sort(selected,function(a,b)
+                                local ra,rb=rank(a.Name),rank(b.Name)
+                                return ra==rb and a.Name<b.Name or ra<rb
+                            end)
+                        end
+                        if #selected>48 then truncated=true end
+                        -- Inserting client children at the active cursor is
+                        -- stack-like, so reverse insertion preserves priority.
+                        local count=math.min(#selected,48,180-#queue)
+                        if #selected>count then truncated=true end
+                        for offset=1,count do
+                            local i=q.group=='client' and count-offset+1 or offset
+                            local v=selected[i]
+                            push(v,q.label..'/'..name(v.Name),q.depth+1,q.limit,q.group)
                         end
                     else rows[#rows+1]=q.label..' children unavailable' end
                 end
@@ -663,6 +705,15 @@ return function(C, env, cfg, log)
             end
         end
         if not C.finite(money) then money=nil end
+        local wallet,walletSources={},{}
+        local playerStats=child(LP,'_stats')
+        for label,key in pairs({Gold='gold_amount',Gems='gem_amount',SummerPearls='_resourceSummerPearls'}) do
+            local amount=numericValue(playerStats,key)
+            if amount~=nil then wallet[label]=amount;walletSources[label]='player/_stats/'..key end
+        end
+        -- resource was observed, but its meaning is not established by a lobby
+        -- field name. It must not silently satisfy the match-Yen readiness gate.
+        local rawResource=numericValue(playerStats,'resource')
         local enemies=child(WS,'_ENEMIES');local count=0
         if enemies then
             for i,m in ipairs(enemies:GetChildren()) do
@@ -682,6 +733,7 @@ return function(C, env, cfg, log)
             stageName=self.stageName or 'unknown',stageVerified=self.stage~=nil,stageSource=self.stageSource,
             mode=self.mode or cfg.mode or 'Unknown',modeVerified=self.mode~=nil,
             placeId=game.PlaceId,wave=w,cash=money,cashSource=moneySource,units=units,unitsComplete=unitsComplete,
+            wallet=wallet,walletSources=walletSources,rawResource=rawResource,
             owned=owned,ownedAt=#owned>0 and now or self.ownedAt,roster=self.roster,rosterAt=self.rosterAt,
             resources=self.resources,resourcesAt=self.resourcesAt,resultVisible=show or finished==true,outcome=outcome,
             resultTexts=texts,enemies=count,pathSamples=#self.path,transportBlocked=self:busy(),
@@ -829,6 +881,7 @@ return function(app)
     label('RUKIA','UPDATE 21 • LIVE ADAPTER UNVERIFIED',colors.accent)
     label('RUKIA',function() return app:ownershipText() end,colors.text)
     label('RUKIA',function() return app:objectiveText() end)
+    label('RUKIA',function() return app:walletText() end)
     button('RUKIA','REFRESH EXPOSED INVENTORY',function() app:refreshInventory() end)
     button('RUKIA','SELECT NEXT OWNED RUKIA',function() app:nextRukia() end)
     button('RUKIA',function() return 'STOP GOAL: '..app.cfg.goal end,function()
@@ -969,6 +1022,12 @@ function app:objectiveText()
     local title,detail=C.plan(self.snapshot,self.cfg)
     return title..'\n'..detail..'\nStop goal: '..self.cfg.goal
 end
+function app:walletText()
+    local s=self.snapshot or {};local w=s.wallet or {}
+    return 'Observed account balances\nGold: '..fmt(w.Gold)..' | Gems: '..fmt(w.Gems)..
+        '\nSummerPearls: '..fmt(w.SummerPearls)..
+        '\nplayer/_stats/resource: '..fmt(s.rawResource)..' (meaning unverified)'
+end
 function app:traitText()
     local u=self:unit();local r=(self.snapshot or {}).resources or {}
     return 'Current trait: '..fmt(u and u.trait)..'\nReroll Tokens: '..fmt(r.RerollToken)..
@@ -1077,12 +1136,13 @@ end
 function app:completeReport()
     local s=self.snapshot or {}
     local out={'[K] AA RUKIA '..C.version,'OFFLINE VERIFIED; LIVE GAME / DELTA UNVERIFIED',
-        self:ownershipText(),self:objectiveText(),self:traitText(),self:statsText(),self:evolutionText(),
+        self:ownershipText(),self:objectiveText(),self:walletText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
         'Premium mutation endpoints: none. Dungeon navigation/chest automation: unavailable.',
         'Profile positions/costs: user-recorded. Path samples: observed enemy motion only.',
         'Legacy import: '..fmt(self.legacySummary),'EXPOSED EQUIPPED RECORDS (UUIDs omitted):'}
+    for label,source in pairs(s.walletSources or {}) do out[#out+1]='Balance source '..label..': '..source end
     for _,u in ipairs(s.roster or {}) do
         out[#out+1]='slot='..fmt(u.slot)..' id='..fmt(u.id)..' cost='..fmt(u.cost)..' trait='..fmt(u.trait)
     end

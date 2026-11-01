@@ -51,6 +51,12 @@ function app:objectiveText()
     local title,detail=C.plan(self.snapshot,self.cfg)
     return title..'\n'..detail..'\nStop goal: '..self.cfg.goal
 end
+function app:walletText()
+    local s=self.snapshot or {};local w=s.wallet or {}
+    return 'Observed account balances\nGold: '..fmt(w.Gold)..' | Gems: '..fmt(w.Gems)..
+        '\nSummerPearls: '..fmt(w.SummerPearls)..
+        '\nplayer/_stats/resource: '..fmt(s.rawResource)..' (meaning unverified)'
+end
 function app:traitText()
     local u=self:unit();local r=(self.snapshot or {}).resources or {}
     return 'Current trait: '..fmt(u and u.trait)..'\nReroll Tokens: '..fmt(r.RerollToken)..
@@ -159,12 +165,13 @@ end
 function app:completeReport()
     local s=self.snapshot or {}
     local out={'[K] AA RUKIA '..C.version,'OFFLINE VERIFIED; LIVE GAME / DELTA UNVERIFIED',
-        self:ownershipText(),self:objectiveText(),self:traitText(),self:statsText(),self:evolutionText(),
+        self:ownershipText(),self:objectiveText(),self:walletText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
         'Premium mutation endpoints: none. Dungeon navigation/chest automation: unavailable.',
         'Profile positions/costs: user-recorded. Path samples: observed enemy motion only.',
         'Legacy import: '..fmt(self.legacySummary),'EXPOSED EQUIPPED RECORDS (UUIDs omitted):'}
+    for label,source in pairs(s.walletSources or {}) do out[#out+1]='Balance source '..label..': '..source end
     for _,u in ipairs(s.roster or {}) do
         out[#out+1]='slot='..fmt(u.slot)..' id='..fmt(u.id)..' cost='..fmt(u.cost)..' trait='..fmt(u.trait)
     end
