@@ -1682,6 +1682,16 @@ local function scoreCard(raw)
     if has('merge') then plus(17,'merge duplicate towers') end
     if has('random buff') then plus(21,'target strongest carry') end
     if has('refund') then plus(8,'recover Yen') end
+    -- Fool's Hunt presents generic blessings such as "+12% Attack" and "+15% Range".
+    -- Score the positive modifier itself, not just named Dungeon items.
+    local attackPct=tonumber(t:match('%+(%d+)%%%s*attack'))
+    local rangePct=tonumber(t:match('%+(%d+)%%%s*range'))
+    if attackPct and not has('enemy attack') then
+        plus(math.clamp(attackPct*1.8,8,42),'tower attack +%')
+    end
+    if rangePct and not has('enemy range') then
+        plus(math.clamp(rangePct*1.05,5,30),'tower range +%')
+    end
     -- Costly curses; unknown values are NEVER presumed safe.
     if any({'new path','extra path','additional path','enemy paths','more paths'}) then minus(72,'extra lanes') end
     if any({'curse of chaos','all curses are random'}) then minus(90,'random curses') end
@@ -1807,7 +1817,8 @@ end
 local REPORT_FILE='K_AA_AutoReport_'..tostring(LP.UserId)..'_'..tostring(game.PlaceId)..'.txt'
 local reporter={active=false,closed=false,folder=nil,lines={},seenCards={},
     seenBosses={},seenThreats={},seenConfirms={},lastWave=-1,lastCardsAt=0,lastEnemiesAt=0,
-    diskCache=nil,session=0,lastTick=0,filesOK=false}
+    diskCache=nil,session=0,lastTick=0,filesOK=false,
+    pendingEndAt=0,finalEnemyLogged=false}
 local function reportText()
     return table.concat(reporter.lines,'\n')
 end
@@ -1907,11 +1918,29 @@ local function unitSnapshot()
     return 'placed='..#units..' yen='..tostring(scanMoney() or '?')..
         ' towers='..table.concat(sample,', ')
 end
+local function enemySnapshot()
+    local folder=WS:FindFirstChild('_ENEMIES')
+    if not folder then return 'enemy folder not visible' end
+    local seen={};local total=0
+    for _,m in ipairs(folder:GetChildren()) do
+        if m:IsA('Model') then
+            total=total+1
+            local id=tostring(m.Name):sub(1,65)
+            if #seen<12 then
+                local st=m:FindFirstChild('_stats')
+                local hp=num(st,{'hp','health','current_health','max_health'})
+                seen[#seen+1]=id..(hp and ('(hp='..math.floor(hp)..')') or '')
+            end
+        end
+    end
+    return 'enemy_count='..total..' first_enemies='..table.concat(seen,', ')
+end
 local function startReport()
     reporter.active=true;reporter.closed=false
     reporter.folder=WS:FindFirstChild('_UNITS')
     reporter.lastWave=-1;reporter.seenCards={};reporter.seenBosses={};reporter.seenThreats={};reporter.seenConfirms={}
     reporter.lastCardsAt=0;reporter.lastEnemiesAt=0
+    reporter.pendingEndAt=0;reporter.finalEnemyLogged=false
     reporter.session=reporter.session+1
     reporter.lines={}
     pcall(function() S.map=mapId();stageData();scanEquipped() end)
@@ -1929,7 +1958,7 @@ end
 local function finishReport(reason)
     if not reporter.active then return end
     recordLine('END',reason..' | wave='..wave()..' | '..unitSnapshot()..
-        ' | result='..resultText(),true)
+        ' | '..enemySnapshot()..' | result='..resultText(),true)
     reporter.active=false
     reporter.closed=true
     if S.options.autoCopyReport then copyReport() end
@@ -1960,7 +1989,7 @@ local function tickReporter()
     if w~=reporter.lastWave then
         reporter.lastWave=w
         if w==1 or (w>0 and w%5==0) then
-            recordLine('CHECKPOINT',unitSnapshot(),w==30)
+            recordLine('CHECKPOINT',unitSnapshot()..' | '..enemySnapshot(),w==30)
         end
     end
     local now=os.clock()
@@ -2013,7 +2042,26 @@ local function tickReporter()
             end
         end
     end
-    if finished then finishReport('Result screen detected') end
+    if finished then
+        if reporter.pendingEndAt==0 then
+            reporter.pendingEndAt=now
+            if not reporter.finalEnemyLogged then
+                reporter.finalEnemyLogged=true
+                recordLine('MATCH FINISH FLAG',
+                    'game signaled finish at wave '..w..' | '..enemySnapshot(),true)
+            end
+        end
+        local panel=LP:FindFirstChild('PlayerGui')
+        panel=panel and panel:FindFirstChild('ResultsUI')
+        local shown=panel and panel:IsA('ScreenGui') and panel.Enabled
+        if (shown and now-reporter.pendingEndAt>=0.8) or
+            now-reporter.pendingEndAt>=6 then
+            finishReport(shown and 'Visible result panel detected'
+                or 'GameFinished flag; result panel not visible')
+        end
+    else
+        reporter.pendingEndAt=0
+    end
 end
 -- ================== END HANDS-FREE RUN REPORTER ==================
 
