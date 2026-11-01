@@ -41,10 +41,12 @@ Restart Roblox after older hooked builds. These protections do not prove Android
 
 ## First test
 
-1. Execute once in the lobby; leave Full Auto OFF.
-2. Refresh exposed inventory and inspect RUKIA / REPORTS. Missing UUIDs or values are blockers.
-3. Manually check the current Dungeon rewards and Evolve recipe before using a key.
-4. Follow [TESTING.md](TESTING.md) before attempting recorded combat.
+The v6.0.3 user report now shows 77 collection records, all six equipped slots and material counts through the client cache. Another lobby folder scan is unnecessary. The next boundary to test is combat.
+
+1. Join a **free Story stage** manually, then execute the unchanged loadstring in that match. Confirm v6.0.4; leave Full Auto OFF.
+2. Start waves and manually place one affordable equipped unit. Open Collection once if needed.
+3. Tap **FARM → READ MATCH DATA + COPY COMBAT REPORT** and paste the copied report.
+4. Compare cash and prices with the actual HUD. Follow [TESTING.md](TESTING.md) before arming recorded combat. Dungeon keys/chests remain manual and unverified.
 
 ### v6.0.1: missing data-path diagnostic
 
@@ -69,6 +71,14 @@ After connection, the retained registry entry and current session are read on no
 **Native limitation:** Roblox caches require results per Luau environment. Delta cache isolation is unverified; require could execute Loader code despite it being reported loaded. The eight-second deadline rejects late results and preserves pending-operation locks, but cannot interrupt native calls or undo execution. This is a manual experimental action. Observation time does not establish server freshness. Compare returned units and counts with your Collection before testing combat.
 
 See [references and validation](docs/CLIENT-CACHE.md).
+
+### v6.0.4: connect the combat data paths
+
+The previous adapter could read inventory but omitted three combat sources used by primary implementations: player/_stats/resource, Loader.LevelData and static Units definitions. Added match-only typed resource cash, read-only cached level data, and an explicit read of the exact reported-loaded src/Data/Units export. No load_data/service getter/initializer is called. One additional manual attempt permits Units to load after inventory; the retained Loader export is reused. No startup introspection is added.
+
+Definition placement and upgrade prices require an **explicit positive observed player_cost_scale**. Missing modifiers do not silently mean 1; user-recorded fallback prices remain available. Recorded modifier/price changes block automation. Temporary missing level data cannot revive a previous run's stage. Missing map endpoints are checked for up to 30 seconds; completed invalid replies permit at most three actual requests, with the global pending/timeout lock preserved.
+
+The focused combat report includes exact equipped matches (UUIDs omitted), position availability, upgrade levels, current prices, data sources, endpoint presence and readiness blockers. These are implemented adapter fixes with offline regressions; actual placement/upgrade acceptance and Android performance still require the supervised match test.
 
 ## Development
 

@@ -56,7 +56,7 @@ function app:walletText()
     local s=self.snapshot or {};local w=s.wallet or {}
     return 'Observed account balances\nGold: '..fmt(w.Gold)..' | Gems: '..fmt(w.Gems)..
         '\nSummerPearls: '..fmt(w.SummerPearls)..
-        '\nplayer/_stats/resource: '..fmt(s.rawResource)..' (meaning unverified)'
+        '\nMatch cash: '..fmt(s.cash)..' | source: '..fmt(s.cashSource)
 end
 function app:traitText()
     local u=self:unit();local r=(self.snapshot or {}).resources or {}
@@ -111,12 +111,22 @@ function app:refreshInventory()
     self.adapter:refreshInventory(os.clock());self.snapshot=self.adapter:observe(os.clock())
     self:notice('Refreshed '..#self.snapshot.owned..' exposed unit records; partial inventory only')
 end
-function app:readClientCache()
+function app:readClientCache(reportKind)
     self.engine:stop('Manual experimental client-cache read','IDLE')
     self:notice('Attempting one loaded-client cache read; spending remains unavailable')
     local started,why=self.adapter:startClientCache()
-    self.awaitCacheCopy=started
-    if not started then self:notice(why);self:copyReport() end
+    self.awaitCacheCopy=started and (reportKind or 'complete') or false
+    if not started then
+        self:notice(why)
+        if reportKind=='combat' then self:copyCombatReport() else self:copyReport() end
+    end
+end
+function app:readMatchData()
+    self.snapshot=self.adapter:observe(os.clock())
+    if not self.snapshot.inMatch then
+        self:notice('Enter a free Story match, start waves and place one equipped unit manually first');return
+    end
+    self:readClientCache('combat')
 end
 function app:nextRukia()
     local list={}
@@ -185,6 +195,7 @@ function app:completeReport()
         self:ownershipText(),self:objectiveText(),self:walletText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
+        self.adapter:combatReport(s),
         self.adapter.cacheReport or 'CLIENT CACHE READER: not attempted; use RUKIA → READ CLIENT CACHE + COPY REPORT',
         'Premium mutation endpoints: none. Dungeon navigation/chest automation: unavailable.',
         'Profile positions/costs: user-recorded. Path samples: observed enemy motion only.',
@@ -216,6 +227,18 @@ function app:copyReport()
     if type(setclipboard)=='function' then
         local ok=pcall(setclipboard,txt);self:notice(ok and 'Complete report copied' or 'Clipboard failed')
     else print(txt);self:notice('Clipboard unavailable; report printed') end
+end
+function app:copyCombatReport()
+    self.snapshot=self.adapter:observe(os.clock())
+    local blockers=C.readiness(self.snapshot,self.profile,cfg)
+    local text='[K] AA RUKIA '..C.version..' | LIVE COMBAT UNVERIFIED\n'..
+        self.adapter:combatReport(self.snapshot)..'\n'..
+        (self.adapter.cacheReport or 'Client cache not connected')..'\n'..
+        'READINESS: '..(#blockers==0 and 'prerequisites present; supervise testing' or table.concat(blockers,'; '))..
+        '\n'..self.log:text()
+    if type(setclipboard)=='function' then
+        local ok=pcall(setclipboard,text);self:notice(ok and 'Combat report copied' or 'Clipboard failed')
+    else print(text);self:notice('Clipboard unavailable; combat report printed') end
 end
 function app:copyConfig()
     local txt=HTTP:JSONEncode({cfg=cfg,profile=self.profile})
@@ -262,7 +285,8 @@ task.spawn(function()
             local failure=app.adapter:poll()
             if failure then app.engine:reject(failure);app:notice(failure) end
             if app.awaitCacheCopy and app.adapter.cacheDone then
-                app.awaitCacheCopy=false;app:copyReport()
+                local kind=app.awaitCacheCopy;app.awaitCacheCopy=false
+                if kind=='combat' then app:copyCombatReport() else app:copyReport() end
             end
             app.recorder:observe(s)
             app.observedWins=app.recorder.wins;app.observedLosses=app.recorder.losses

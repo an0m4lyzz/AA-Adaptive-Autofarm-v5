@@ -304,4 +304,146 @@ check('removed cache registry entry clears observed units on refresh',function()
     local s=a:observe(20)
     assert(#s.roster==0 and #s.owned==0 and s.rosterAt==nil and calls.loaded==1)
 end)
+check('native resource becomes combat cash only inside an observed match',function()
+    local a,_,_,ws,_,_,player=world();player.attrs={}
+    local resource=node('resource','NumberValue');resource.Value=425
+    player.kids[#player.kids+1]=node('_stats','Folder',{}, {resource})
+    local w=node('_wave_num','IntValue');w.Value=1
+    ws.kids={node('_UNITS'),w}
+    local s=a:observe(10)
+    assert(s.cash==425 and s.cashSource=='player/_stats/resource (match only)')
+    ws.kids={node('_UNITS'),w,node('_LOBBIES'),node('_EVOLVE')};w.Value=0
+    assert(a:observe(11).cash==nil)
+end)
+local function combatFixture(skipUnits)
+    local loader=node('Loader','ModuleScript');local units=node('Units','ModuleScript')
+    local level={id='namek_level_1',name='Act 1',_gamemode='story'}
+    local service={session={collection={collection_profile_data={owned_units={unitA={unit_id='bulma'}},
+        equipped_units={[1]='unitA'}}}}}
+    local registry={ItemInventoryServiceClient={module=service}}
+    local init=function() error('must never initialize') end
+    local export={init=init,LevelData=level}
+    local defs={bulma={cost=500,upgrade={{cost=1000},{cost=2000}}}}
+    local calls={loader=0,units=0}
+    local loaded=skipUnits and {loader} or {loader,units}
+    local a,env,cfg,ws,rs,gui,player,tasks=world({getloadedmodules=function() return loaded end,
+        require=function(target)
+            if target==loader then calls.loader+=1;return export end
+            assert(target==units);calls.units+=1;return defs
+        end,debug={getupvalues=function(fn) assert(fn==init);return {registry} end}})
+    rs.kids={node('src','Folder',{}, {loader,node('Data','Folder',{}, {units})})}
+    local w=node('_wave_num','IntValue');w.Value=1
+    local scale=node('player_cost_scale','NumberValue');scale.Value=1.5
+    ws.kids={node('_UNITS'),w,node('_DATA','Folder',{}, {node('LevelModifiers','Folder',{}, {scale})})}
+    return a,env,cfg,ws,player,tasks,export,defs,calls,scale,loaded,units
+end
+check('manual cache read also observes loaded level data without calling load_data',function()
+    local a,_,_,_,_,tasks= combatFixture()
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    local s=a:observe(10)
+    assert(s.stage=='namek_level_1' and s.stageSource=='Loader.LevelData observed')
+    assert(s.mode=='Story' and s.modeVerified)
+end)
+check('static unit data supplies current scaled placement and upgrade costs',function()
+    local a,_,_,ws,_,tasks,_,_,calls= combatFixture()
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    local tower=node('tower','Model',{}, {node('_stats','Folder',{player_id=12,uuid='unitA',id='bulma',upgrade=0})})
+    ws.kids[1].kids={tower}
+    local s=a:observe(10)
+    assert(calls.units==1 and s.roster[1].cost==750 and s.roster[1].baseCost==500)
+    assert(s.units[1].nextCost==1500 and s.costScale==1.5)
+end)
+check('missing or invalid cost scale never certifies a definition as effective cost',function()
+    local a,_,_,_,_,tasks,_,_,_,scale= combatFixture()
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    scale.Value=0/0
+    local s=a:observe(10)
+    assert(s.roster[1].cost==nil and s.roster[1].baseCost==500)
+end)
+check('wave reset rejects stale loader level data until a fresh level arrives',function()
+    local a,_,_,ws,_,tasks,export= combatFixture()
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    assert(a:observe(10).stageVerified)
+    ws.kids[2].Value=0
+    assert(not a:observe(11).stageVerified)
+    export.LevelData={id='namek_level_1',_gamemode='story'}
+    assert(a:observe(12).stageVerified)
+end)
+check('absent map endpoint does not permanently consume the map read attempt',function()
+    local a,_,_,ws,_,_,_,tasks=world();local w=node('_wave_num','IntValue');w.Value=1
+    local config=node('_MAP_CONFIG');ws.kids={node('_UNITS'),w,config}
+    a:observe(10);assert(#tasks==0)
+    local remote=node('GetLevelData','RemoteFunction')
+    function remote:InvokeServer() return {id='stage',_gamemode='story'} end
+    config.kids={remote};a:observe(15)
+    assert(#tasks==1);assert(coroutine.resume(tasks[1]))
+    local s=a:observe(16);assert(s.stage=='stage' and s.modeVerified and s.mode=='Story')
+end)
+check('combat report shows exact identity matching and actionable missing fields without UUIDs',function()
+    local a,_,_,_,_,tasks= combatFixture()
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    local s=a:observe(10)
+    s.units={{uuid='unitA',id='bulma',level=1,pos={1,2,3},nextCost=3000},
+        {uuid='private-uuid',id='bulma',level=0}}
+    local text=a:combatReport(s)
+    assert(text:find('exact equipped match=true',1,true) and text:find('exact equipped match=false',1,true))
+    assert(text:find('next cost=3000',1,true) and text:find('position=false',1,true))
+    assert(not text:find('unitA',1,true) and not text:find('private-uuid',1,true))
+end)
+check('paid dungeon flags override generic story mode in observed level data',function()
+    local a,_,_,_,_,tasks,export= combatFixture();export.LevelData._dungeon=true
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    assert(a:observe(10).mode=='Dungeon')
+end)
+check('missing endpoint probes do not consume the three actual map requests',function()
+    local a,_,_,ws,_,_,_,tasks=world();local w=node('_wave_num','IntValue');w.Value=1
+    local config=node('_MAP_CONFIG');ws.kids={node('_UNITS'),w,config}
+    a:observe(10);a:observe(15);a:observe(20)
+    local remote=node('GetLevelData','RemoteFunction')
+    function remote:InvokeServer() return {id='late-stage'} end
+    config.kids={remote};a:observe(25)
+    assert(#tasks==1);assert(coroutine.resume(tasks[1]));assert(a:observe(26).stage=='late-stage')
+end)
+check('completed invalid map replies retry at most three times',function()
+    local a,_,_,ws,_,_,_,tasks=world();local w=node('_wave_num','IntValue');w.Value=1
+    local remote=node('GetLevelData','RemoteFunction')
+    function remote:InvokeServer() return {} end
+    ws.kids={node('_UNITS'),w,node('_MAP_CONFIG','Folder',{}, {remote})}
+    for i=1,3 do a:observe(10+i*4);assert(tasks[i]);assert(coroutine.resume(tasks[i])) end
+    a:observe(26);assert(#tasks==3 and not a.stage)
+end)
+check('disappearing modifier clears effective prices without editing the cache',function()
+    local a,_,_,_,_,tasks,_,defs,_,scale= combatFixture()
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    assert(a:observe(10).roster[1].cost==750)
+    scale.Value=nil
+    assert(a:observe(11).roster[1].cost==nil and defs.bulma.cost==500)
+end)
+check('a manual match read can obtain Units that loaded after the inventory connection',function()
+    local a,_,_,_,_,tasks,_,_,calls,_,loaded,units= combatFixture(true)
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    assert(not a:observe(10).definitionsAvailable)
+    loaded[#loaded+1]=units
+    assert(a:startClientCache());assert(tasks[2]);assert(coroutine.resume(tasks[2]))
+    assert(a:observe(11).roster[1].cost==750 and calls.loader==1 and calls.units==1)
+end)
+check('temporary nil level data does not erase the previous-run stale marker',function()
+    local a,_,_,ws,_,tasks,export= combatFixture()
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    assert(a:observe(10).stageVerified)
+    local old=export.LevelData;export.LevelData=nil;a:observe(11)
+    ws.kids[2].Value=0;a:observe(12)
+    export.LevelData=old
+    assert(not a:observe(13).stageVerified)
+end)
+check('late map response is rejected even when the polling timer has not run',function()
+    local clock=0
+    local a,env,_,ws,_,_,_,tasks=world({os={clock=function() return clock end}})
+    local w=node('_wave_num','IntValue');w.Value=1
+    local remote=node('GetLevelData','RemoteFunction')
+    function remote:InvokeServer() clock=10;return {id='expired-stage',_gamemode='story'} end
+    ws.kids={node('_UNITS'),w,node('_MAP_CONFIG','Folder',{}, {remote})}
+    a:observe(0);assert(coroutine.resume(tasks[1]))
+    assert(not a.stage and env.K_AA_NETWORK_PENDING==nil)
+end)
 print('All '..n..' adapter tests passed')

@@ -6,7 +6,18 @@ Restart Roblox after older injections. Execute the unchanged loadstring once in 
 
 Only after a stable observer test, try one re-execution: the old GUI must disappear and one new GUI remain. Closing must stop updates and dragging. If it crashes before the GUI, stop repeated injection; offline syntax tests cannot diagnose that crash.
 
-## Read the client cache (v6.0.3)
+## Next test: combat data (v6.0.4)
+
+The user's v6.0.3 report already recognized 77 owned records and six equipped slots. Do not repeat a broad lobby metadata scan.
+
+1. Join a free Story stage manually, then inject once **inside that match**. Confirm the GUI/report is v6.0.4. Leave Full Auto OFF.
+2. Start waves and place one affordable equipped unit manually. Open Collection once if it has not been loaded.
+3. Tap **FARM → READ MATCH DATA + COPY COMBAT REPORT**. This stops combat, reads existing client data and copies a focused report; it sends no place/upgrade request.
+4. Paste the report. Check that stage, match cash, equipped slot, exact tower match and position are observed. Compare effective placement/next-upgrade prices against the game. If affordable, upgrade that same tower manually once, then use REPORTS → COPY COMBAT REPORT to inspect the changed level.
+
+Missing scale or definitions leaves computed costs unknown. Do not enable combat to bypass a blocker. The focused report names the missing source. Dungeon access, keys and rewards are not part of this free test.
+
+## Read the client cache
 
 1. Keep Full Auto OFF and open the game's Units/Collection once.
 2. In this tool, tap **RUKIA → READ CLIENT CACHE + COPY REPORT** once.
@@ -15,25 +26,21 @@ Only after a stable observer test, try one re-execution: the old GUI must disapp
 
 This manual experimental path checks loaded Loader status, retrieves its export and reads existing closure/cache tables. No service getter or initializer is explicitly invoked. Delta may isolate module caches differently; native require can execute module code in a different environment. Timeout rejects late results and blocks duplicates but cannot interrupt a native call. An unsupported attempt is not retried automatically. No summons, rerolls, keys or evolution actions are enabled by connecting the reader.
 
-After a successful connection, REFRESH EXPOSED INVENTORY rereads the known service table without another loaded-module snapshot. Compare updates after changing the equipped team manually. These observations do not certify server freshness or full combat compatibility.
+After a successful connection, REFRESH EXPOSED INVENTORY rereads the known service table without another loaded-module snapshot. If Units was not loaded yet, one additional explicit cache/match read can inspect its reported-loaded export while reusing Loader. Compare updates after changing the equipped team manually. These observations do not certify server freshness or full combat compatibility.
 
 ## Verify observations
 
 Compare exact Rukia copy, form, trait, stat scope, raw values and grades with unit details. Plain rukia is the old unit. SETTINGS accepts explicit player/... inventory/resource roots; only a few direct candidates are tried. Table-based inventories require the manual experimental cache reader; unsupported layouts stay unknown. No GC scanning or arbitrary numeric-module loading is used.
 
-Currency may be bound to an actual local match Value (for example player/leaderstats/yen only if it exists). Never bind account gems/gold or another player's cash. Stage ID must come from observed GetLevelData; selected mode stays unverified unless the response supplies it. Unknown counts are not zero.
+Typed player/_stats/resource supplies cash only inside an observed active/stage-identified match. It is never used as lobby match cash. Currency can also be bound to an actual local match Value; never bind account gems/gold or another player's cash. Stage ID comes from current Loader.LevelData or observed GetLevelData. Selected mode stays unverified unless supported mode fields/flags supply it. Unknown counts are not zero.
 
 Inspect current Rukia rewards, key costs/limits and Evolve recipe yourself. Historical wiki data does not certify this patch. Copy the complete report when data is missing.
 
 ## Record a small profile
 
-For v6.0.1, first use **REPORTS → SCAN DATA PATHS + COPY REPORT** when all inventory fields remain unknown. The button stops combat, collects a bounded one-shot metadata report and copies the complete report automatically. Paste that result. A supported inventory path is still unknown until evidence identifies one; running the diagnostic does not establish farming readiness. Stage/Yen unknown in a detected lobby is expected. The report now includes observed context and place ID.
-
-In v6.0.2, the same button prioritizes the now-observed src/client tree instead of repeated prompt/settings entries. Compare Gold, Gems and SummerPearls with your on-screen account balances. The raw player/_stats/resource value has unverified meaning and cannot authorize match spending. These balance observations do not establish unit ownership. Leave Full Auto OFF while the inventory adapter remains unavailable.
-
 Use a low-stakes stage you can already clear. Historical signatures spawn_unit(uuid,CFrame), upgrade_unit_ingame(model), and set_game_finished_vote("replay") remain experimental. Endpoint existence is not payload verification.
 
-Place one affordable equipped unit manually. Wait for observed roster/stage. Tap RECORD CURRENT OWN PLACEMENTS. All towers must map to exact equipped UUIDs and IDs. Costs must be visible, or entered by equipped slot as comma-separated fallback values after checking them in game. Empty positions preserve slots. Costs are source-labeled and may differ under modifiers.
+Place one affordable equipped unit manually. Wait for observed roster/stage. Tap RECORD CURRENT OWN PLACEMENTS. All towers must map to exact equipped UUIDs and IDs. Costs can come from loaded Units plus an explicitly observed cost scale, direct native cost fields, or comma-separated fallback values checked in game. Empty positions preserve slots. Prices and modifiers are source-labeled; changed recorded prices/scales block automation.
 
 Recording stores positions, slots, UUIDs and costs, and clears route/combat/replay confirmations. It orders by slot and coordinate, not an adaptive combat strategy. It does not record unseen upgrade plans, terrain legality, skills or target priority.
 

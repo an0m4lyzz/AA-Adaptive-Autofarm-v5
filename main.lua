@@ -5,7 +5,7 @@ local __modules = {}
 __modules.core = (function()
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.3'
+C.version = '6.0.4'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -14,7 +14,7 @@ C.itemLabels = {SacredTreasure='Sacred Treasure',StarFruit='Star Fruit',StarFrui
 C.defaults = {goal='Acquire',targetTrait='Unique',targetGrade='SSS',reserve=0,maxRuns=1,
     maxSeconds=1200,upgrade=true,replay=false,replayFreeConfirmed=false,protocolConfirmed=false,
     routeConfirmed=false,traitCap=0,statCap=0,inventoryPath='',resourcePath='',cashPath='',
-    mode='Dungeon',logDisk=false,selectedUuid=''}
+    mode='Dungeon',logDisk=false,selectedUuid='',recordCosts=''}
 function C.finite(x) return type(x)=='number' and x==x and math.abs(x)<1e12 end
 function C.deficit(have,need)
     if not C.finite(have) then return nil end
@@ -81,7 +81,7 @@ function C.sanitize(raw)
     if not table.find({'Acquire','Trait','Stats','Evolution','Build'},cfg.goal) then cfg.goal='Acquire' end
     if not grades[cfg.targetGrade] then cfg.targetGrade='SSS' end
     if not table.find({'Unique','Divine','Celestial','Reaper','Godspeed','Sniper'},cfg.targetTrait) then cfg.targetTrait='Unique' end
-    for _,key in ipairs({'inventoryPath','resourcePath','cashPath'}) do cfg[key]=cfg[key]:sub(1,200) end
+    for _,key in ipairs({'inventoryPath','resourcePath','cashPath','recordCosts'}) do cfg[key]=cfg[key]:sub(1,200) end
     if not table.find({'Dungeon','Story','Infinite','Challenge','Portal','Raid','Event','Legend'},cfg.mode) then cfg.mode='Dungeon' end
     -- Spending/arming/protocol confirmations are session-specific and never restored.
     cfg.routeConfirmed=false;cfg.protocolConfirmed=false;cfg.replayFreeConfirmed=false
@@ -125,6 +125,8 @@ function C.readiness(s,p,cfg)
     end
     need(p.stage==s.stage and p.placeId==s.placeId and p.mode==s.mode,'Recorded profile does not match this stage/mode')
     need(p.source=='user-recorded','Uncertified old macro; record again for this patch')
+    need(p.costScale==nil or (C.finite(s.costScale) and p.costScale==s.costScale),
+        'Current cost modifier differs or is unknown; record prices again')
     need(#p.entries>0 and #p.entries<=24,'Profile must have 1–24 placements')
     local seen={}
     for _,u in ipairs(s.roster or {}) do seen[u.uuid]=u end
@@ -134,6 +136,7 @@ function C.readiness(s,p,cfg)
         local u=seen[e.uuid]
         need(u~=nil and u.id==e.id,'Profile slot '..i..' identity not currently equipped')
         need(C.finite(e.cost) and e.cost>0,'Profile slot '..i..' deployment cost unknown')
+        need(not u or not C.finite(u.cost) or u.cost==e.cost,'Profile slot '..i..' deployment price changed')
         need(C.distance(e.pos,e.pos)==0,'Profile slot '..i..' position invalid')
     end
     return blockers
@@ -619,10 +622,14 @@ return function(C, env, cfg, log)
         if not self.alive then return false,'Reader closed' end
         if self:busy() then return false,'Another request is still pending' end
         if self.clientService then
-            self.nextInventory=0;self.cacheDone=true
-            return true
-        end
-        if self.cacheAttempted then return false,'Client cache read already attempted this session' end
+            if self.definitions or self.combatAttempted then
+                self.nextInventory=0;self.cacheDone=true;return true
+            end
+            -- One additional explicit read if static data loaded after the
+            -- inventory. Reuse the retained Loader export; never initialize it.
+            self.combatAttempted=true
+        elseif self.cacheAttempted then return false,'Client cache read already attempted this session' end
+        local retainedLoader=self.loaderExport
         self.cacheAttempted=true
         local getLoaded=getloadedmodules
         local getUpvalues=type(debug)=='table' and rawget(debug,'getupvalues')
@@ -647,13 +654,21 @@ return function(C, env, cfg, log)
                 if not valid() then error('Read cancelled/expired',0) end
                 local listed,loaded=pcall(getLoaded)
                 if not listed or type(loaded)~='table' then error('Loaded-module enumeration unavailable',0) end
-                local present=false
-                for i=1,math.min(#loaded,8192) do if rawget(loaded,i)==loaderModule then present=true;break end end
+                local function listed(target)
+                    if not target then return false end
+                    for i=1,math.min(#loaded,8192) do if rawget(loaded,i)==target then return true end end
+                    return false
+                end
+                local present=listed(loaderModule)
                 if not present then error('Loader not confirmed already loaded; require skipped',0) end
                 trace[#trace+1]='Exact Loader listed as loaded; no service lookup functions called'
                 if not valid() then error('Read cancelled/expired',0) end
-                local readOK,loader=pcall(require,loaderModule)
-                if not readOK or type(loader)~='table' then error('Loaded Loader export unavailable',0) end
+                local loader=retainedLoader
+                if type(loader)~='table' then
+                    local readOK,result=pcall(require,loaderModule)
+                    if not readOK or type(result)~='table' then error('Loaded Loader export unavailable',0) end
+                    loader=result
+                end
                 if not valid() then error('Read cancelled/expired',0) end
                 local roots={{value=loader,source='Loader export'}}
                 for _,field in ipairs({'init','load_client_service'}) do
@@ -677,6 +692,17 @@ return function(C, env, cfg, log)
                 end
                 local match=inventoryParser.find(roots,LP.UserId)
                 if not match then error('No supported existing local service session; no getter fallback',0) end
+                match.loader=loader
+                -- Only the exact, reported-loaded static Units export. Never
+                -- call load_data or recurse into the numeric child modules.
+                local unitsModule=child(child(child(RS,'src'),'Data'),'Units')
+                if unitsModule and unitsModule:IsA('ModuleScript') and listed(unitsModule) then
+                    if not valid() then error('Read cancelled/expired',0) end
+                    local dataOK,data=pcall(require,unitsModule)
+                    if dataOK and type(data)=='table' then match.definitions=data end
+                    trace[#trace+1]='Reported-loaded Units export: '..(match.definitions and 'table' or 'unavailable')
+                    if not valid() then error('Read cancelled/expired',0) end
+                else trace[#trace+1]='Units not confirmed loaded; static require skipped' end
                 return match
             end)
             if env.K_AA_CLIENT_CACHE_PENDING==mark then env.K_AA_CLIENT_CACHE_PENDING=nil end
@@ -690,6 +716,7 @@ return function(C, env, cfg, log)
             if ok then
                 self.clientBinding={registry=found.registry,name=found.name}
                 self.clientService=found.service;self.clientSource=found.source;self.nextInventory=0
+                self.loaderExport=found.loader;self.definitions=found.definitions
                 self.cacheReport='CLIENT CACHE READER: existing session found (experimental)\nCache source: '..found.source..
                     '\nInitial read recognized units='..#found.snapshot.owned..' equipped='..#found.snapshot.roster..
                     '; incomplete ownership is not absence. Explicit getter/initializer calls: 0.'
@@ -872,6 +899,23 @@ return function(C, env, cfg, log)
         return r and (r:IsA('RemoteFunction') or r:IsA('RemoteEvent')) and r or nil
     end
     function A:busy() return env.K_AA_NETWORK_PENDING~=nil or env.K_AA_CLIENT_CACHE_PENDING~=nil end
+    local function acceptLevel(self,data,source)
+        if type(data)~='table' then return false end
+        local id=rawget(data,'id') or rawget(data,'level_id')
+        if (type(id)~='string' and type(id)~='number') or tostring(id)=='' then return false end
+        self.stage=tostring(id):sub(1,100);self.stageSource=source
+        local name=rawget(data,'name') or rawget(data,'level_name')
+        self.stageName=type(name)=='string' and name:sub(1,100) or self.stage
+        local mode=rawget(data,'mode') or rawget(data,'gamemode') or rawget(data,'_gamemode')
+        local modes={story='Story',infinite='Infinite',challenge='Challenge',dungeon='Dungeon',
+            raid='Raid',portal='Portal',event='Event',legend='Legend'}
+        self.mode=type(mode)=='string' and modes[mode:lower()] or nil
+        -- Paid/special contexts take precedence over a generic gamemode.
+        if rawget(data,'_dungeon') then self.mode='Dungeon'
+        elseif rawget(data,'_is_map_or_portal_level') then self.mode='Portal'
+        elseif rawget(data,'_event_contract') then self.mode='Event' end
+        return true
+    end
     function A:issue(kind,args)
         if not self.alive or self:busy() then return false,'Transport busy/closed' end
         local remote
@@ -890,16 +934,14 @@ return function(C, env, cfg, log)
             if env.K_AA_NETWORK_PENDING==mark then env.K_AA_NETWORK_PENDING=nil end
             if not self.alive then return end
             if kind=='map' then
-                if ok and type(res)=='table' and self.run==mark.run and not mark.expired then
-                    local id=res.id or res.level_id
-                    if type(id)=='string' or type(id)=='number' then
-                        self.stage=tostring(id):sub(1,100);self.stageSource='GetLevelData observed'
-                        self.stageName=tostring(res.name or res.level_name or id):sub(1,100)
-                        local mode=res.mode or res.gamemode
-                        if table.find({'Story','Infinite','Challenge','Dungeon','Raid','Portal','Event','Legend'},mode) then self.mode=mode end
+                if self.run==mark.run then self.mapRequested=false end
+                if ok and type(res)=='table' and self.run==mark.run and not mark.expired
+                    and os.clock()-mark.at<=8 then
+                    if acceptLevel(self,res,'GetLevelData observed') then
+                        self.mapStatus='Stage read succeeded'
                         log:add('STAGE',self.stage..' | '..self.stageName)
-                    end
-                else log:add('MAP READ','No current stage evidence') end
+                    else self.mapStatus='Stage response had no supported ID' end
+                else self.mapStatus='Stage read failed/expired';log:add('MAP READ','No current stage evidence') end
             elseif not ok or res==false then
                 self.failures[#self.failures+1]='Remote '..kind..' rejected/error'
             end
@@ -928,6 +970,8 @@ return function(C, env, cfg, log)
         local mapConfig=child(WS,'_MAP_CONFIG');local mapModel=child(WS,'_MAP')
         local started=scalar(WS,{'_waves_started'})
         local finished=scalar(child(WS,'_DATA'),{'GameFinished'})
+        local level=type(self.loaderExport)=='table' and rawget(self.loaderExport,'LevelData') or nil
+        if type(level)~='table' then level=nil end
         -- The user's live lobby also contains _UNITS and _wave_num. Those alone
         -- are insufficient evidence of a match. These markers are observations,
         -- not a rule inferred from the selected Dungeon preset.
@@ -938,10 +982,13 @@ return function(C, env, cfg, log)
         if folder~=self.lastFolder or w<self.lastWave or mapConfig~=self.lastConfig
             or mapModel~=self.lastMap or waveNode~=self.lastWaveNode
             or context~=self.lastContext
+            or (level and self.lastLevelData and level~=self.lastLevelData)
             or (started==false and self.lastStarted==true)
             or (finished==false and self.lastFinished==true) then
             self.run+=1;self.lastFolder=folder;self.stage=nil;self.mode=nil
             self.stageSource='unknown';self.stageName=nil;self.resultHidden=false;self.mapRequested=false
+            self.staleLevelData=self.lastLevelData;self.mapAttempts=0;self.nextMapTry=0;self.mapStatus='Not read yet'
+            self.mapDeadline=now+30
             self.path={};self.previous=setmetatable({},{__mode='k'})
             self.nextInventory=0
         end
@@ -949,17 +996,54 @@ return function(C, env, cfg, log)
         self.lastContext=context
         self.lastStarted=started;self.lastFinished=finished
         self.lastWave=w
+        if level then self.lastLevelData=level end
+        if not lobby and folder and waveNode and level and level~=self.staleLevelData then
+            acceptLevel(self,level,'Loader.LevelData observed')
+        end
         if now>=self.nextInventory then self:refreshInventory(now) end
+        local modifiers=child(child(WS,'_DATA'),'LevelModifiers')
+        local costScale=numericValue(modifiers,'player_cost_scale')
+        if not C.finite(costScale) or costScale<=0 or costScale>100 then costScale=nil end
+        local function costs(u)
+            local def=type(self.definitions)=='table' and rawget(self.definitions,u.id) or nil
+            if type(def)~='table' then return end
+            local base=rawget(def,'cost')
+            if C.finite(base) and base>0 then
+                u.baseCost=base
+                if u.cost==nil and costScale then
+                    u.cost=base*costScale;u.costSource='Units.cost × observed player_cost_scale'
+                end
+            end
+            if u.nextCost==nil and C.finite(u.level) and u.level>=0 and u.level<=30 and u.level%1==0 then
+                local upgrades=rawget(def,'upgrade')
+                local step=type(upgrades)=='table' and rawget(upgrades,u.level+1) or nil
+                local nextCost=type(step)=='table' and rawget(step,'cost') or nil
+                if C.finite(nextCost) and nextCost>0 and costScale then
+                    u.nextCost=nextCost*costScale;u.nextCostSource='Units.upgrade × observed player_cost_scale'
+                end
+            end
+        end
+        -- Snapshot copies: a disappearing modifier cannot leave old effective
+        -- costs stuck in the retained collection cache.
+        local roster={}
+        for _,u in ipairs(self.roster) do
+            local copy=table.clone(u);costs(copy);roster[#roster+1]=copy
+        end
         local units={};self.models={};local unitsComplete=true
+        local scan={total=0,examined=0,own=0,missingIdentity=0,missingPosition=0}
         if folder then
             local children=folder:GetChildren();unitsComplete=#children<=120
+            scan.total=#children
             for i,m in ipairs(children) do
                 if i>120 then break end
+                scan.examined+=1
                 if m:IsA('Model') and own(m) then
+                    scan.own+=1
                     local u=record(m,'battle')
                     if u then
-                        u.key=m;u.pos=point(m);self.models[m]=m;units[#units+1]=u
-                    end
+                        costs(u);u.key=m;u.pos=point(m);self.models[m]=m;units[#units+1]=u
+                        if not u.pos then scan.missingPosition+=1 end
+                    else scan.missingIdentity+=1 end
                 end
             end
         end
@@ -983,9 +1067,14 @@ return function(C, env, cfg, log)
             local amount=numericValue(playerStats,key)
             if amount~=nil then wallet[label]=amount;walletSources[label]='player/_stats/'..key end
         end
-        -- resource was observed, but its meaning is not established by a lobby
-        -- field name. It must not silently satisfy the match-Yen readiness gate.
+        -- Historical primary implementations use resource for match money.
+        -- The same field in a lobby is never sufficient match evidence.
         local rawResource=numericValue(playerStats,'resource')
+        if money==nil and (not cfg.cashPath or cfg.cashPath=='') and not lobby
+            and folder and waveNode and (w>0 or started==true or self.stage~=nil)
+            and rawResource~=nil and rawResource>=0 then
+            money=rawResource;moneySource='player/_stats/resource (match only)'
+        end
         local enemies=child(WS,'_ENEMIES');local count=0
         if enemies then
             for i,m in ipairs(enemies:GetChildren()) do
@@ -1005,13 +1094,23 @@ return function(C, env, cfg, log)
             stageName=self.stageName or 'unknown',stageVerified=self.stage~=nil,stageSource=self.stageSource,
             mode=self.mode or cfg.mode or 'Unknown',modeVerified=self.mode~=nil,
             placeId=game.PlaceId,wave=w,cash=money,cashSource=moneySource,units=units,unitsComplete=unitsComplete,
+            towerScan=scan,
             wallet=wallet,walletSources=walletSources,rawResource=rawResource,
-            owned=owned,ownedAt=#owned>0 and now or self.ownedAt,roster=self.roster,rosterAt=self.rosterAt,
+            owned=owned,ownedAt=#owned>0 and now or self.ownedAt,roster=roster,rosterAt=self.rosterAt,
+            costScale=costScale,definitionsAvailable=self.definitions~=nil,mapStatus=self.mapStatus,
             resources=self.resources,resourcesAt=self.resourcesAt,resultVisible=show or finished==true,outcome=outcome,
             resultTexts=texts,enemies=count,pathSamples=#self.path,transportBlocked=self:busy(),
             inventorySource=self.inventorySource}
-        if s.inMatch and not self.mapRequested and not self:busy() then
-            self.mapRequested=true;self:issue('map',{})
+        if s.inMatch and not s.stageVerified and not self.mapRequested and not self:busy()
+            and now>=self.nextMapTry and (self.mapAttempts or 0)<3 and now<=(self.mapDeadline or now) then
+            self.nextMapTry=now+3
+            local sent,why=self:issue('map',{})
+            if sent then self.mapAttempts=(self.mapAttempts or 0)+1 end
+            -- task.spawn may finish synchronously. The transport lock, rather
+            -- than its return value, determines whether a request is pending.
+            self.mapRequested=sent and env.K_AA_NETWORK_PENDING~=nil
+            if self.mapRequested then self.mapStatus='Stage request pending'
+            elseif not sent then self.mapStatus=why end
         end
         return s
     end
@@ -1023,6 +1122,37 @@ return function(C, env, cfg, log)
         elseif action.kind=='replay' then return self:issue('replay',{'replay'}) end
         return false,'Unsupported action'
     end
+    function A:combatReport(s)
+        local function fmt(v) return v==nil and '?' or tostring(v) end
+        local scan=s.towerScan or {}
+        local rows={'COMBAT DATA (UUIDs omitted)',
+            'Context='..fmt(s.context)..' | place='..fmt(s.placeId)..' | wave='..fmt(s.wave),
+            'Stage='..fmt(s.stage)..' | source='..fmt(s.stageSource),
+            'Mode='..fmt(s.mode)..' | observed='..fmt(s.modeVerified),
+            'Cash='..fmt(s.cash)..' | source='..fmt(s.cashSource)..' | raw resource='..fmt(s.rawResource),
+            'Loaded Units table='..fmt(s.definitionsAvailable)..' | player_cost_scale='..fmt(s.costScale),
+            'Map read='..fmt(self.mapStatus)..' | transport pending='..fmt(s.transportBlocked),
+            'Tower scan: examined='..fmt(scan.examined)..' / '..fmt(scan.total)..' | own='..fmt(scan.own)..
+                ' | missing identity='..fmt(scan.missingIdentity)..' | missing position='..fmt(scan.missingPosition)}
+        local roster={}
+        for _,u in ipairs(s.roster or {}) do
+            roster[u.uuid]=u
+            rows[#rows+1]='Equipped slot='..fmt(u.slot)..' id='..fmt(u.id)..' | base cost='..fmt(u.baseCost)..
+                ' | effective cost='..fmt(u.cost)..' | source='..fmt(u.costSource)
+        end
+        for i,u in ipairs(s.units or {}) do
+            if i>24 then rows[#rows+1]='Additional towers omitted';break end
+            local r=roster[u.uuid]
+            rows[#rows+1]='Tower '..i..' id='..fmt(u.id)..' | exact equipped match='..
+                tostring(r~=nil and r.id==u.id)..' | position='..tostring(u.pos~=nil)..' | upgrade='..fmt(u.level)..
+                ' | next cost='..fmt(u.nextCost)..' | source='..fmt(u.nextCostSource)..
+                ' | DMG='..fmt(u.damage)..' SPA='..fmt(u.spa)..' range='..fmt(u.range)
+        end
+        for _,kind in ipairs({'spawn_unit','upgrade_unit_ingame'}) do
+            rows[#rows+1]='Endpoint '..kind..' present='..tostring(self:remote(kind)~=nil)
+        end
+        return table.concat(rows,'\n')
+    end
     function A:record(s,costText)
         if not s.inMatch or not s.stageVerified then return nil,'Stage identity unavailable' end
         if s.unitsComplete~=true then return nil,'Tower observation incomplete; recording disabled' end
@@ -1030,15 +1160,16 @@ return function(C, env, cfg, log)
         local costs={}
         for i,token in ipairs(string.split(tostring(costText or ''),',')) do costs[i]=tonumber(token) end
         local roster={};for _,u in ipairs(s.roster) do roster[u.uuid]=u end
-        local p={stage=s.stage,mode=s.mode,placeId=s.placeId,source='user-recorded',entries={}}
+        local p={stage=s.stage,mode=s.mode,placeId=s.placeId,source='user-recorded',costScale=s.costScale,entries={}}
         for _,u in ipairs(s.units) do
             local r=roster[u.uuid]
             if not r or r.id~=u.id or not u.pos then return nil,'Cannot map every own tower to exact equipped UUID/position' end
-            local cost=r.cost or u.cost or costs[r.slot]
+            local cost=u.cost or r.cost or costs[r.slot]
             if not C.finite(cost) or cost<=0 then return nil,'Deployment cost missing; enter comma-separated costs by slot' end
             if #p.entries>=24 then return nil,'At most 24 recorded placements' end
             p.entries[#p.entries+1]={uuid=u.uuid,id=u.id,slot=r.slot,pos=u.pos,cost=cost,wave=0,
-                costSource=r.cost and 'observed collection' or u.cost and 'observed battle' or 'user-recorded'}
+                costSource=u.costSource or (u.cost and 'observed battle') or r.costSource or
+                    (r.cost and 'observed collection') or 'user-recorded'}
         end
         table.sort(p.entries,function(a,b)
             if a.slot~=b.slot then return a.slot<b.slot end
@@ -1047,7 +1178,9 @@ return function(C, env, cfg, log)
         if #p.entries==0 then return nil,'Place your team manually first' end
         return p
     end
-    function A:close() self.alive=false;self.clientService=nil;self.clientBinding=nil end
+    function A:close()
+        self.alive=false;self.clientService=nil;self.clientBinding=nil;self.loaderExport=nil;self.definitions=nil
+    end
     return A
 end
 
@@ -1180,6 +1313,8 @@ return function(app)
     label('EVOLUTION',function() return app:evolutionText() end,colors.text)
     label('EVOLUTION','Reported sources: Sacred Treasure from Shibuya Portals; fruit from current fruit challenges. Current eligibility, quantities, prices and recipes need live verification. Evolution and material purchases stay manual.')
     label('FARM',function() return app:farmText() end,colors.text)
+    button('FARM','READ MATCH DATA + COPY COMBAT REPORT',function() app:readMatchData() end)
+    label('FARM','First combat test: enter a free Story stage, start waves and place one equipped unit manually. Then read match data here. Compare cash/costs with the game. This action stops combat and sends no placement or upgrade.')
     button('FARM',function() return app.engine.armed and 'STOP FULL AUTO' or 'FULL AUTO: OFF • EXPERIMENTAL COMBAT' end,function() app:toggleFarm() end)
     button('FARM','CHECK READINESS',function() app:checkReady() end)
     button('FARM','RECORD CURRENT OWN PLACEMENTS',function() app:record() end)
@@ -1194,6 +1329,7 @@ return function(app)
     button('FARM',function() return 'CURRENT REPLAY HAS NO ITEM COST: '..tostring(app.cfg.replayFreeConfirmed) end,function() app:toggle('replayFreeConfirmed') end)
     label('FARM','Automatic dungeon room choices, chests, keys, target priority, skills and queueing: UNAVAILABLE. Random tower event modes need their own adapter. Recorded positions are user data, not a map datamine.')
     button('REPORTS','COPY COMPLETE REPORT',function() app:copyReport() end)
+    button('REPORTS','COPY COMBAT REPORT',function() app:copyCombatReport() end)
     button('REPORTS','SCAN DATA PATHS + COPY REPORT',function() app:scanPathsAndCopy() end)
     button('REPORTS','SAVE BOUNDED REPORT LOCALLY',function() app:saveReport() end)
     label('REPORTS',function() return app:reportStatus() end,colors.text)
@@ -1301,7 +1437,7 @@ function app:walletText()
     local s=self.snapshot or {};local w=s.wallet or {}
     return 'Observed account balances\nGold: '..fmt(w.Gold)..' | Gems: '..fmt(w.Gems)..
         '\nSummerPearls: '..fmt(w.SummerPearls)..
-        '\nplayer/_stats/resource: '..fmt(s.rawResource)..' (meaning unverified)'
+        '\nMatch cash: '..fmt(s.cash)..' | source: '..fmt(s.cashSource)
 end
 function app:traitText()
     local u=self:unit();local r=(self.snapshot or {}).resources or {}
@@ -1356,12 +1492,22 @@ function app:refreshInventory()
     self.adapter:refreshInventory(os.clock());self.snapshot=self.adapter:observe(os.clock())
     self:notice('Refreshed '..#self.snapshot.owned..' exposed unit records; partial inventory only')
 end
-function app:readClientCache()
+function app:readClientCache(reportKind)
     self.engine:stop('Manual experimental client-cache read','IDLE')
     self:notice('Attempting one loaded-client cache read; spending remains unavailable')
     local started,why=self.adapter:startClientCache()
-    self.awaitCacheCopy=started
-    if not started then self:notice(why);self:copyReport() end
+    self.awaitCacheCopy=started and (reportKind or 'complete') or false
+    if not started then
+        self:notice(why)
+        if reportKind=='combat' then self:copyCombatReport() else self:copyReport() end
+    end
+end
+function app:readMatchData()
+    self.snapshot=self.adapter:observe(os.clock())
+    if not self.snapshot.inMatch then
+        self:notice('Enter a free Story match, start waves and place one equipped unit manually first');return
+    end
+    self:readClientCache('combat')
 end
 function app:nextRukia()
     local list={}
@@ -1430,6 +1576,7 @@ function app:completeReport()
         self:ownershipText(),self:objectiveText(),self:walletText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
+        self.adapter:combatReport(s),
         self.adapter.cacheReport or 'CLIENT CACHE READER: not attempted; use RUKIA → READ CLIENT CACHE + COPY REPORT',
         'Premium mutation endpoints: none. Dungeon navigation/chest automation: unavailable.',
         'Profile positions/costs: user-recorded. Path samples: observed enemy motion only.',
@@ -1461,6 +1608,18 @@ function app:copyReport()
     if type(setclipboard)=='function' then
         local ok=pcall(setclipboard,txt);self:notice(ok and 'Complete report copied' or 'Clipboard failed')
     else print(txt);self:notice('Clipboard unavailable; report printed') end
+end
+function app:copyCombatReport()
+    self.snapshot=self.adapter:observe(os.clock())
+    local blockers=C.readiness(self.snapshot,self.profile,cfg)
+    local text='[K] AA RUKIA '..C.version..' | LIVE COMBAT UNVERIFIED\n'..
+        self.adapter:combatReport(self.snapshot)..'\n'..
+        (self.adapter.cacheReport or 'Client cache not connected')..'\n'..
+        'READINESS: '..(#blockers==0 and 'prerequisites present; supervise testing' or table.concat(blockers,'; '))..
+        '\n'..self.log:text()
+    if type(setclipboard)=='function' then
+        local ok=pcall(setclipboard,text);self:notice(ok and 'Combat report copied' or 'Clipboard failed')
+    else print(text);self:notice('Clipboard unavailable; combat report printed') end
 end
 function app:copyConfig()
     local txt=HTTP:JSONEncode({cfg=cfg,profile=self.profile})
@@ -1507,7 +1666,8 @@ task.spawn(function()
             local failure=app.adapter:poll()
             if failure then app.engine:reject(failure);app:notice(failure) end
             if app.awaitCacheCopy and app.adapter.cacheDone then
-                app.awaitCacheCopy=false;app:copyReport()
+                local kind=app.awaitCacheCopy;app.awaitCacheCopy=false
+                if kind=='combat' then app:copyCombatReport() else app:copyReport() end
             end
             app.recorder:observe(s)
             app.observedWins=app.recorder.wins;app.observedLosses=app.recorder.losses

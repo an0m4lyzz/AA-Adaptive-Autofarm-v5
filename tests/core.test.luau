@@ -201,4 +201,17 @@ check('a placed event tower cannot prove permanent Rukia acquisition',function()
     local s=snap();s.owned={{uuid='borrowed',id='rukia_2',statScope='battle'}}
     assert(not C.goalMet(s,config()))
 end)
+check('recorded costs stop when the current cost modifier disappears or changes',function()
+    local s=snap();local p=profile();p.costScale=1.5;s.costScale=1.5
+    assert(#C.readiness(s,p,config())==0)
+    s.costScale=2;assert(#C.readiness(s,p,config())>0)
+    s.costScale=nil;assert(#C.readiness(s,p,config())>0)
+end)
+check('current equipped deployment price invalidates a different recorded price',function()
+    local s=snap();local p=profile();s.roster[1].cost=p.entries[1].cost+1
+    assert(#C.readiness(s,p,config())>0)
+end)
+check('manually verified fallback prices survive settings reload',function()
+    assert(C.sanitize({recordCosts='100,,300'}).recordCosts=='100,,300')
+end)
 print('All '..n..' tests passed')

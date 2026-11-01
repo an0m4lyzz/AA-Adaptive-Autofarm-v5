@@ -1,6 +1,6 @@
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.3'
+C.version = '6.0.4'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -9,7 +9,7 @@ C.itemLabels = {SacredTreasure='Sacred Treasure',StarFruit='Star Fruit',StarFrui
 C.defaults = {goal='Acquire',targetTrait='Unique',targetGrade='SSS',reserve=0,maxRuns=1,
     maxSeconds=1200,upgrade=true,replay=false,replayFreeConfirmed=false,protocolConfirmed=false,
     routeConfirmed=false,traitCap=0,statCap=0,inventoryPath='',resourcePath='',cashPath='',
-    mode='Dungeon',logDisk=false,selectedUuid=''}
+    mode='Dungeon',logDisk=false,selectedUuid='',recordCosts=''}
 function C.finite(x) return type(x)=='number' and x==x and math.abs(x)<1e12 end
 function C.deficit(have,need)
     if not C.finite(have) then return nil end
@@ -76,7 +76,7 @@ function C.sanitize(raw)
     if not table.find({'Acquire','Trait','Stats','Evolution','Build'},cfg.goal) then cfg.goal='Acquire' end
     if not grades[cfg.targetGrade] then cfg.targetGrade='SSS' end
     if not table.find({'Unique','Divine','Celestial','Reaper','Godspeed','Sniper'},cfg.targetTrait) then cfg.targetTrait='Unique' end
-    for _,key in ipairs({'inventoryPath','resourcePath','cashPath'}) do cfg[key]=cfg[key]:sub(1,200) end
+    for _,key in ipairs({'inventoryPath','resourcePath','cashPath','recordCosts'}) do cfg[key]=cfg[key]:sub(1,200) end
     if not table.find({'Dungeon','Story','Infinite','Challenge','Portal','Raid','Event','Legend'},cfg.mode) then cfg.mode='Dungeon' end
     -- Spending/arming/protocol confirmations are session-specific and never restored.
     cfg.routeConfirmed=false;cfg.protocolConfirmed=false;cfg.replayFreeConfirmed=false
@@ -120,6 +120,8 @@ function C.readiness(s,p,cfg)
     end
     need(p.stage==s.stage and p.placeId==s.placeId and p.mode==s.mode,'Recorded profile does not match this stage/mode')
     need(p.source=='user-recorded','Uncertified old macro; record again for this patch')
+    need(p.costScale==nil or (C.finite(s.costScale) and p.costScale==s.costScale),
+        'Current cost modifier differs or is unknown; record prices again')
     need(#p.entries>0 and #p.entries<=24,'Profile must have 1–24 placements')
     local seen={}
     for _,u in ipairs(s.roster or {}) do seen[u.uuid]=u end
@@ -129,6 +131,7 @@ function C.readiness(s,p,cfg)
         local u=seen[e.uuid]
         need(u~=nil and u.id==e.id,'Profile slot '..i..' identity not currently equipped')
         need(C.finite(e.cost) and e.cost>0,'Profile slot '..i..' deployment cost unknown')
+        need(not u or not C.finite(u.cost) or u.cost==e.cost,'Profile slot '..i..' deployment price changed')
         need(C.distance(e.pos,e.pos)==0,'Profile slot '..i..' position invalid')
     end
     return blockers
