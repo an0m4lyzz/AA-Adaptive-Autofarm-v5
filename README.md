@@ -46,6 +46,16 @@ The latest main.lua disables the global `__namecall` hook on startup and avoids 
 
 Event action signature recording and event/equip join-action learning require the hook and are therefore disabled by default in this stability build. The card advisor, on-screen recommendations, and basic run logging do not depend on that hook. If the app still crashes before the GUI appears, stop testing rather than repeatedly injecting it; check the executor's compatibility and try a clean unmodified game session.
 
+## Goal farming: Rukia or Griffin (new experimental presets)
+
+In the **PLAY** tab, choose **FARM TARGET**: OFF → RUKIA → GRIFFIN. The target is saved and preselects the associated mode. **CHECK FARM READINESS** checks whether the normal auto-placement prerequisites are visible. **COPY FARM GUIDE / CHECKLIST** copies target-specific steps. FULL AUTO does not turn on just by selecting a goal.
+
+**Rukia / Snow Reaper (War):** selects Dungeon mode. Obtain a dungeon key and enter the randomly generated 20-depth run manually. Rukia is a chance-based rare/golden chest reward after dungeon progression. Prioritize rare chests and useful chest-conversion perks such as Philosopher's Stone. Because random tile/room choices, chest opening, and key inventory are not tested, **those steps are manual**. The preset prevents automatic replay votes to avoid accidental repeat key consumption. This is a combat-autofarm *foundation*, **not** an unattended 20-depth dungeon auto-run.
+
+**Griffin:** selects Infinite mode. Infinite modes can give Gems by wave progression; obtain the regular Griffin from its summon banner **only while available**. Then use Griffin for the 7,500-takedown ascension requirement. Current banner status is not detected. **Auto-summoning, resource spending, Mythic sacrifices, and egg ascension are disabled**, because neither their current UI paths nor safe confirmations have been verified.
+
+To test existing combat automation for a selected target, enter a supported match manually, verify your roster through the UNITS menu, and use CHECK FARM READINESS first. If required unit IDs, enemy path objects, or the placement endpoint are missing, FULL AUTO refuses to start. The older generic combat engine is still experimental and has **not** been verified to complete current Dungeon/Infinite stages. The mobile stability hotfix remains active; startup hooks and automatic GC scans remain disabled. Don't leave the farm unattended until placements, upgrades, stage transitions, and rewards are verified in a supervised run.
+
 ## Fool's Hunt fully automatic play: current status
 
 **Not ready for unattended Wave 30 runs.** The game's random offered units and spells are not part of the standard equipped roster, and the tested event instance did not expose the expected `_ENEMIES` folder. Existing generic auto-placement and auto-upgrade cannot be assumed to work in this event, regardless of the card strategy. The **CHECK EVENT AUTO-PLAY READINESS** button in the **PLAY** tab reports known blockers.
