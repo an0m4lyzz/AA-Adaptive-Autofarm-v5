@@ -38,6 +38,14 @@ Changing tabs does **not** enable autofarming or change saved settings. Auto-pic
 
 **Limitations:** The card detection is based on client-visible GUI labels, and clicking depends on what Delta supports. Auto-clicking is attempted only for a limited number of readable choices with a scoring margin; close calls, high-risk options and target-specific spells are left for manual selection. A reported input attempt is not server confirmation. Verify behavior in a supervised run before relying on it.
 
+## Fool's Hunt fully automatic play: current status
+
+**Not ready for unattended Wave 30 runs.** The game's random offered units and spells are not part of the standard equipped roster, and the tested event instance did not expose the expected `_ENEMIES` folder. Existing generic auto-placement and auto-upgrade cannot be assumed to work in this event, regardless of the card strategy. The **CHECK EVENT AUTO-PLAY READINESS** button in the **PLAY** tab reports known blockers.
+
+To gather the exact event-specific inputs without manually copying each wave, the recorder now attempts to log **EVENT ACTION SHAPE** entries for relevant user-originated actions (remote name and argument types only), plus a **WORKSPACE PROBE** summary of visible folder names. It deliberately omits UUID values and full argument contents. This data may not appear on executors where read-only call interception is unavailable, and it does not make placement automatic yet.
+
+The card advisor now rates early enemy-speed curses more cautiously. This adjustment is heuristic and still needs to be verified in a real match. **Do not enable generic Full Auto for unattended Fool's Hunt play** until its random-unit and spell paths have been tested.
+
 ## New in v5.1: automatic run reports
 
 You **do not need to start the autofarm** to record a normal Event run.
