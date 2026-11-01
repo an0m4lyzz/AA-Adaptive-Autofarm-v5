@@ -1588,7 +1588,9 @@ local function installCapture()
     end)
     return ok,err
 end
-local captureOK,captureErr=installCapture()
+-- Mobile stability hotfix: do NOT install a permanent __namecall hook on load.
+-- A preexisting hook from older injections only disappears after restarting Roblox.
+local captureOK,captureErr=false,'Disabled by mobile stability mode (restart Roblox to clear old hooks)'
 local function replayQueue()
     if #S.eventQueue==0 then return false end
     task.spawn(function()
@@ -1662,7 +1664,7 @@ end
 local function scanCards()
     local guiRoot=LP:FindFirstChild('PlayerGui')
     if not guiRoot then return {} end
-    local candidates={};local seen={}
+    local candidates={};local seen={};local inspected=0
     for _,b in ipairs(guiRoot:GetDescendants()) do
         if (b:IsA('TextButton') or b:IsA('ImageButton')) and visible(b)
             and b.AbsoluteSize.X>=25 and b.AbsoluteSize.Y>=15
@@ -1672,19 +1674,31 @@ local function scanCards()
                 low:find('choose') or low:find('pick') or low:find('select') or
                 low:find('accept') or low:find('reward') or low:find('curse') or
                 low:find('bless') or low:find('option')
-            local f,t=cardFrame(b)
-            local context=(f.Parent and f.Parent.Name:lower() or '')..' '..f.Name:lower()
-            local inDecision=context:find('card') or context:find('vote') or
-                context:find('modifier') or context:find('option') or
-                context:find('choice') or context:find('curse') or
-                context:find('bless') or context:find('reward') or
-                context:find('relic')
-            if (looksLikeVote or inDecision) and #t>=24 and isCandidate(t)
-                and not t:lower():find('purchase') and not t:lower():find('robux') then
-                local id=t:lower():sub(1,130)
-                if not seen[id] then
-                    seen[id]=true
-                    table.insert(candidates,{text=t,button=b,frame=f})
+            -- Only inspect descendants for buttons in plausible card menus.
+            -- Old code traversed nested GUI trees for nearly EVERY Roblox UI button.
+            local ancestry=b.Parent;local context=''
+            for depth=1,4 do
+                if not ancestry or not ancestry:IsA('GuiObject') then break end
+                context=context..' '..ancestry.Name:lower()
+                ancestry=ancestry.Parent
+            end
+            local inDecision=context:find('card',1,true) or
+                context:find('vote',1,true) or context:find('modifier',1,true) or
+                context:find('option',1,true) or context:find('choice',1,true) or
+                context:find('curse',1,true) or context:find('bless',1,true) or
+                context:find('reward',1,true) or context:find('relic',1,true)
+            if looksLikeVote or inDecision then
+                inspected=inspected+1
+                if inspected>50 then break end
+                local f,t=cardFrame(b)
+                if #t>=24 and isCandidate(t)
+                    and not t:lower():find('purchase',1,true)
+                    and not t:lower():find('robux',1,true) then
+                    local id=t:lower():sub(1,130)
+                    if not seen[id] then
+                        seen[id]=true
+                        table.insert(candidates,{text=t,button=b,frame=f})
+                    end
                 end
             end
         end
@@ -2047,7 +2061,9 @@ local function startReport()
     S.eventActionBuffer={};S.eventActionSeen={}
     reporter.session=reporter.session+1
     reporter.lines={}
-    pcall(function() S.map=mapId();stageData();scanEquipped() end)
+    -- Inventory getgc(true) allocates a large object snapshot on mobile and
+    -- provides no offered units in Fool's Hunt. Defer to manual UNIT scans.
+    pcall(function() S.map=mapId();stageData() end)
     local equipped={}
     for _,unit in ipairs(S.inventory) do
         if #equipped>=8 then break end
@@ -2130,7 +2146,7 @@ local function tickReporter()
             end
         end
     end
-    if now-reporter.lastCardsAt>=1.3 and not finished then
+    if now-reporter.lastCardsAt>=3.0 and not finished then
         reporter.lastCardsAt=now
         local ok,cards=pcall(scanCards)
         if ok and type(cards)=='table' and #cards>=2 and #cards<=5 then
@@ -2341,6 +2357,10 @@ button('CHECK EVENT AUTO-PLAY READINESS',function()
     end
 end)
 main=button('START FULL AUTO (OFF)',function(b)
+    if not S.enabled and S.mode=='Event' and #S.inventory==0 then
+        note('Event autoplay not ready: no equipped roster. Leave Full Auto OFF; use CARDS instead.')
+        return
+    end
     S.enabled=not S.enabled
     b.Text=S.enabled and 'STOP FULL AUTO (RUNNING)' or 'START FULL AUTO (OFF)'
     b.BackgroundColor3=S.enabled and C.active or C.button
@@ -2671,7 +2691,7 @@ task.spawn(function()
             pcall(function() finishReport('Auto-report turned off') end)
         end
         -- Advice/auto-card picking works during manual play; FULL AUTO stays off.
-        if S.options.cardAdvisor and os.clock()-(S.lastCardScan or 0)>1.1 then
+        if S.options.cardAdvisor and os.clock()-(S.lastCardScan or 0)>2.5 then
             S.lastCardScan=os.clock()
             pcall(tickCards)
         elseif not S.options.cardAdvisor and tipBanner then
@@ -2745,4 +2765,4 @@ task.spawn(function()
         end
     end
 end)
-note('v5.1 loaded: AUTO-LOG ON by default, even with full autofarm OFF. Reports: '..REPORT_FILE)
+note('v5.1 mobile SAFE MODE loaded: no startup hook or automatic getgc scan. Reports: '..REPORT_FILE)
