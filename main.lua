@@ -1,4 +1,5 @@
--- [K] Anime Adventures Adaptive Unit Planner v5.0 (Delta / touch UI)
+-- [K] Anime Adventures Adaptive Unit Planner v5.1 (Delta / touch UI)
+-- Automatic read-only run recorder: wave checkpoints, modifier cards, bosses, and results.
 -- No external loader, network requests, payments, teleport bypasses, or key system.
 -- EXPERIMENTAL: Game endpoints and inventory are based on publicly documented older AA builds.
 -- Smart placer samples visible enemy routes and validates a spawn via live own-unit counts.
@@ -30,7 +31,8 @@ local S = {
     autoQueue=false, run=0, wave=0, lastWave=0, startedAt=0, status='Loaded',
     options={place=true,upgrade=true,smartPlace=true,smartUpgrade=true,abilities=false,skip=true,start=true,replay=true,
         farming=true, savedMacros=true, maxTotal=16, maxEach=3,
-        cardAdvisor=true, autoCards=false, cautiousSkip=true, autoEquip=false, stageScout=true},
+        cardAdvisor=true, autoCards=false, cautiousSkip=true, autoEquip=false, stageScout=true,
+        autoReport=true, autoCopyReport=true},
     goal='Balanced', cardSnapshot={}, cardHistory={}, lastCardKey='',
     lastCardAttempt=0, lastCardAlert=0, cardConfidence=0, cardStatus='No cards detected', 
     inventory={}, inventoryAt=0, logs={}, unitReport={}, planReport={}, upgradeReport={}, lastPlanner=0, threatReport={},
@@ -1784,6 +1786,195 @@ local function tickCards()
 end
 -- ================== END CARD DECISION ENGINE ==================
 
+
+-- ================== V5.1 HANDS-FREE RUN REPORTER ==================
+-- Runs separately from full autofarm. No remote calls that place/upgrade/vote.
+-- Clipboard is just the latest report; local file is the safer backup when supported.
+local REPORT_FILE='K_AA_AutoReport_'..tostring(LP.UserId)..'_'..tostring(game.PlaceId)..'.txt'
+local reporter={active=false,closed=false,folder=nil,lines={},seenCards={},
+    seenBosses={},seenThreats={},lastWave=-1,lastCardsAt=0,lastEnemiesAt=0,
+    diskCache=nil,session=0,lastTick=0,filesOK=false}
+local function reportText()
+    return table.concat(reporter.lines,'\n')
+end
+local function persistReport(line)
+    local chunk=line..'\n'
+    if type(appendfile)=='function' then
+        local ok=pcall(function()
+            if type(isfile)=='function' and not isfile(REPORT_FILE)
+                and type(writefile)=='function' then writefile(REPORT_FILE,'') end
+            appendfile(REPORT_FILE,chunk)
+        end)
+        if ok then reporter.filesOK=true;return true end
+    end
+    if type(writefile)=='function' then
+        if reporter.diskCache==nil then
+            reporter.diskCache=''
+            if type(readfile)=='function' then
+                pcall(function()
+                    if type(isfile)~='function' or isfile(REPORT_FILE) then
+                        reporter.diskCache=readfile(REPORT_FILE) or ''
+                    end
+                end)
+            end
+        end
+        reporter.diskCache=reporter.diskCache..chunk
+        local ok=pcall(function() writefile(REPORT_FILE,reporter.diskCache) end)
+        if ok then reporter.filesOK=true;return true end
+    end
+    return false
+end
+local function copyReport()
+    if type(setclipboard)~='function' then return false end
+    local txt=reportText()
+    if #txt==0 then return false end
+    return pcall(function() setclipboard(txt) end)
+end
+local function recordLine(kind,detail,copyNow)
+    local txt=string.format('[%s][wave=%s][%s] %s',
+        os.date('%Y-%m-%d %H:%M:%S'),tostring(wave()),kind,
+        tostring(detail or ''):gsub('[\r\n]+',' / '):sub(1,2500))
+    reporter.lines[#reporter.lines+1]=txt
+    if #reporter.lines>240 then table.remove(reporter.lines,1) end
+    persistReport(txt)
+    if copyNow and S.options.autoCopyReport then
+        if copyReport() then note('AUTO REPORT copied: '..kind..' | saved='..tostring(reporter.filesOK)) end
+    end
+end
+local function resultText()
+    local pgui=LP:FindFirstChild('PlayerGui')
+    local result=pgui and pgui:FindFirstChild('ResultsUI')
+    if not result then return 'Unknown result (no visible result panel)' end
+    local words={}
+    for _,x in ipairs(result:GetDescendants()) do
+        if (x:IsA('TextLabel') or x:IsA('TextButton')) and #words<35 then
+            local word=cleanText(x.Text)
+            if #word>0 and #word<=100 then words[#words+1]=word end
+        end
+    end
+    local desc=table.concat(words,' | '):sub(1,450)
+    local lowerDesc=desc:lower()
+    local status=lowerDesc:find('victory',1,true) and 'Victory'
+        or (lowerDesc:find('defeat',1,true) or lowerDesc:find('failed',1,true)) and 'Defeat'
+        or 'Unconfirmed'
+    return status..' | '..desc
+end
+local function unitSnapshot()
+    local sample={}
+    local units=ownUnits()
+    for _,u in ipairs(units) do
+        if #sample>=14 then break end
+        local stats=u:FindFirstChild('_stats')
+        local id=tostring(stat(stats,{'id','unit_id'}) or u.Name):sub(1,50)
+        local lvl=stat(stats,{'upgrade','upgrade_level','upgrade_lvl','level'})
+        local dmg=num(stats,DAMAGE)
+        sample[#sample+1]=id..'(up='..tostring(lvl or '?')..
+            ',dmg='..tostring(dmg or '?')..')'
+    end
+    return 'placed='..#units..' yen='..tostring(scanMoney() or '?')..
+        ' towers='..table.concat(sample,', ')
+end
+local function startReport()
+    reporter.active=true;reporter.closed=false
+    reporter.folder=WS:FindFirstChild('_UNITS')
+    reporter.lastWave=-1;reporter.seenCards={};reporter.seenBosses={};reporter.seenThreats={}
+    reporter.lastCardsAt=0;reporter.lastEnemiesAt=0
+    reporter.session=reporter.session+1
+    reporter.lines={}
+    pcall(function() S.map=mapId();stageData();scanEquipped() end)
+    local equipped={}
+    for _,unit in ipairs(S.inventory) do
+        if #equipped>=8 then break end
+        equipped[#equipped+1]=tostring(unit.slot)..':'..tostring(unit.id):sub(1,55)
+    end
+    recordLine('START','session='..reporter.session..' | mode='..S.mode..
+        ' | map='..tostring(S.map)..' | stage='..
+        tostring((S.stageData or {}).name or '?')..
+        ' | equipped='..table.concat(equipped,', '),false)
+    note('AUTO REPORT recording | no need to start full auto')
+end
+local function finishReport(reason)
+    if not reporter.active then return end
+    recordLine('END',reason..' | wave='..wave()..' | '..unitSnapshot()..
+        ' | result='..resultText(),true)
+    reporter.active=false
+    reporter.closed=true
+    if S.options.autoCopyReport then copyReport() end
+    note('AUTO REPORT finished: '..(reporter.filesOK and REPORT_FILE or 'memory only')..
+        ' | clipboard='..tostring(type(setclipboard)=='function'))
+end
+local function tickReporter()
+    local inGame=isMatch()
+    if not inGame then
+        if reporter.active then finishReport('Match ended, lobby returned, or teleport') end
+        reporter.closed=false
+        return
+    end
+    local folder=WS:FindFirstChild('_UNITS')
+    local w=wave()
+    local finished=isFinished()
+    if reporter.active and reporter.folder~=folder then
+        finishReport('Match instance changed')
+    end
+    if reporter.active and w<=1 and reporter.lastWave>=5 and not finished then
+        finishReport('Wave reset; previous run ended')
+    end
+    if reporter.closed then
+        if finished or w>1 then return end
+        reporter.closed=false
+    end
+    if not reporter.active then startReport() end
+    if w~=reporter.lastWave then
+        reporter.lastWave=w
+        if w==1 or (w>0 and w%5==0) then
+            recordLine('CHECKPOINT',unitSnapshot(),w==30)
+        end
+    end
+    local now=os.clock()
+    if now-reporter.lastEnemiesAt>=2.5 and not finished then
+        reporter.lastEnemiesAt=now
+        local ok=pcall(v5ScanStage)
+        if ok then
+            for _,name in ipairs(S.bossNames or {}) do
+                if not reporter.seenBosses[name] then
+                    reporter.seenBosses[name]=true
+                    recordLine('BOSS','first seen: '..tostring(name):sub(1,100)..
+                        ' | '..unitSnapshot(),true)
+                end
+            end
+            for _,flag in ipairs(COUNTERS) do
+                if (S.counterReport[flag] or 0)>0 and not reporter.seenThreats[flag] then
+                    reporter.seenThreats[flag]=true
+                    recordLine('ENEMY TRAIT','first seen: '..flag..
+                        ' | count='..tostring(S.counterReport[flag]),false)
+                end
+            end
+        end
+    end
+    if now-reporter.lastCardsAt>=1.3 and not finished then
+        reporter.lastCardsAt=now
+        local ok,cards=pcall(scanCards)
+        if ok and type(cards)=='table' and #cards>=2 and #cards<=5 then
+            local choiceLines={};local ids={}
+            for _,card in ipairs(cards) do
+                local label=tostring(card.text or ''):sub(1,340)
+                local score=scoreCard(label)
+                choiceLines[#choiceLines+1]=label..' [estimated score='..score..']'
+                ids[#ids+1]=label
+            end
+            table.sort(ids)
+            local key=tostring(w)..'|'..table.concat(ids,'<>')
+            if not reporter.seenCards[key] then
+                reporter.seenCards[key]=true
+                recordLine('CARDS','choices='..#cards..
+                    ' | '..table.concat(choiceLines,' || '),true)
+            end
+        end
+    end
+    if finished then finishReport('Result screen detected') end
+end
+-- ================== END HANDS-FREE RUN REPORTER ==================
+
 -- Compact, scrollable mobile UI (no dependencies).
 local parent=LP:WaitForChild('PlayerGui')
 if type(gethui)=='function' then pcall(function() parent=gethui() end) end
@@ -1870,6 +2061,16 @@ toggle('AUTO SKIP WAVES','skip')
 toggle('AUTO REPLAY','replay')
 toggle('PRIORITIZE MONEY UNITS','farming')
 toggle('CARD ADVISOR','cardAdvisor')
+toggle('AUTO-LOG RUN (no autofarm needed)','autoReport')
+toggle('AUTO-COPY CARDS / BOSSES / END','autoCopyReport')
+button('COPY COMPLETE AUTO REPORT',function()
+    if copyReport() then note('Full run report copied; '..#reporter.lines..' entries')
+    else note('Clipboard unavailable; see '..REPORT_FILE..' or executor console'); print(reportText()) end
+end)
+button('SHOW AUTO REPORT STATUS',function()
+    note('Reporter '..(S.options.autoReport and 'ON' or 'OFF')..' | lines='..#reporter.lines..
+        ' | local file='..tostring(reporter.filesOK)..' | '..REPORT_FILE)
+end)
 toggle('AUTO PICK CARDS (experimental)','autoCards')
 toggle('CAUTIOUS WAVE SKIP','cautiousSkip')
 toggle('SCOUT MAP / ENEMY COUNTERS','stageScout')
@@ -2080,6 +2281,7 @@ shrink.MouseButton1Click:Connect(function()
 end)
 function S.stop()
     S.enabled=false;S.alive=false;S.queueLearning=false
+    if reporter.active then pcall(function() finishReport('Script closed manually') end) end
     pcall(saveSettings)
     if S.gui then S.gui:Destroy() end
     if ENV.K_AA_V5==S then ENV.K_AA_V5=nil end
@@ -2097,6 +2299,16 @@ task.spawn(function()
             S.queueLearning=false
             saveSettings()
             note('Event learning ended. Captured '..#S.eventQueue..' actions.')
+        end
+        if S.options.autoReport and os.clock()-reporter.lastTick>=0.7 then
+            reporter.lastTick=os.clock()
+            local ok,err=pcall(tickReporter)
+            if not ok and os.clock()-(reporter.lastErrorAt or 0)>15 then
+                reporter.lastErrorAt=os.clock()
+                recordLine('RECORDER ERROR',tostring(err):sub(1,250),false)
+            end
+        elseif not S.options.autoReport and reporter.active then
+            pcall(function() finishReport('Auto-report turned off') end)
         end
         if S.enabled then
             local now=os.clock()
@@ -2170,4 +2382,4 @@ task.spawn(function()
         end
     end
 end)
-note('v5 loaded: map scout / counter planner ON; automatic equipping OFF until learned and verified.')
+note('v5.1 loaded: AUTO-LOG ON by default, even with full autofarm OFF. Reports: '..REPORT_FILE)
