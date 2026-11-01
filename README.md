@@ -38,6 +38,14 @@ Changing tabs does **not** enable autofarming or change saved settings. Auto-pic
 
 **Limitations:** The card detection is based on client-visible GUI labels, and clicking depends on what Delta supports. Auto-clicking is attempted only for a limited number of readable choices with a scoring margin; close calls, high-risk options and target-specific spells are left for manual selection. A reported input attempt is not server confirmation. Verify behavior in a supervised run before relying on it.
 
+## Mobile crash hotfix (November 1, 2026)
+
+The latest main.lua disables the global `__namecall` hook on startup and avoids an automatic `getgc(true)` inventory scan when a manual Event run starts. It also pre-filters candidate card buttons before deep UI traversal and reduces scanning frequency.
+
+**After a crash, fully close Roblox and reopen it before using the same loadstring.** Old injected hooks can remain in the running process even after replacing main.lua. For the first test, execute in the lobby, keep FULL AUTO OFF and use the CARDS menu. Do not run the loadstring repeatedly within the same Roblox session while troubleshooting.
+
+Event action signature recording and event/equip join-action learning require the hook and are therefore disabled by default in this stability build. The card advisor, on-screen recommendations, and basic run logging do not depend on that hook. If the app still crashes before the GUI appears, stop testing rather than repeatedly injecting it; check the executor's compatibility and try a clean unmodified game session.
+
 ## Fool's Hunt fully automatic play: current status
 
 **Not ready for unattended Wave 30 runs.** The game's random offered units and spells are not part of the standard equipped roster, and the tested event instance did not expose the expected `_ENEMIES` folder. Existing generic auto-placement and auto-upgrade cannot be assumed to work in this event, regardless of the card strategy. The **CHECK EVENT AUTO-PLAY READINESS** button in the **PLAY** tab reports known blockers.
