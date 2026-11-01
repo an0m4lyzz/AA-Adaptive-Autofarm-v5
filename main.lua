@@ -754,9 +754,17 @@ local function resetMatch()
     S.map=mapId()
     stageData()
     run.key=currentKey()
-    scanEquipped()
-    scanOwned()
-    recommendTeam()
+    if S.farmTarget=='Off' then
+        -- Existing behavior for other modes. Not automatically used for target farms.
+        scanEquipped()
+        scanOwned()
+        recommendTeam()
+    else
+        -- Preserve the manually checked roster. Re-running getgc(true) during
+        -- a match caused serious stability concerns on mobile/Delta.
+        note('Goal-farm match: preserved '..#S.inventory..
+            ' verified equipped slots. Skipping heavy ownership scans.')
+    end
     note('Run ready: '..run.key..' | equipped '..#S.inventory..' | saved steps '..#profile().steps)
 end
 
@@ -2267,7 +2275,7 @@ local sectionDescriptions={
     OTHER='Event matchmaking and script controls.'
 }
 local sectionPrefixes={
-    {'START FULL AUTO','PLAY'},{'CHECK EVENT AUTO-PLAY','PLAY'},
+    {'START FULL AUTO','PLAY'},{'CHECK FARM READINESS','PLAY'},
     {'MODE:','PLAY'},{'FARM TARGET:','PLAY'},{'COPY FARM GUIDE','PLAY'},
     {'AUTO CHOOSE BEST CARD','CARDS'},{'CARD STRATEGY','CARDS'},
     {'SET BIG REWARDS','CARDS'},{'CARD ADVISOR','CARDS'},
@@ -2350,24 +2358,32 @@ local function button(txt,cb,groupOverride)
     return b
 end
 local main
-button('CHECK EVENT AUTO-PLAY READINESS',function()
+button('CHECK FARM READINESS',function()
     if not isMatch() then
-        note('Readiness: enter the event first. Full Auto is experimental.')
+        note('Readiness: join your chosen match first. No auto matchmaking in this preset.')
         return
     end
-    local readyRoster=#S.inventory>0
-    local pathFound=WS:FindFirstChild('_ENEMIES')~=nil
-    if S.mode=='Event' and not readyRoster then
-        note('Event full auto NOT READY: random offered units are not scanned as equipped. '..
-            'Use manual units + Auto Cards and send EVENT ACTION SHAPE report.')
-    elseif not pathFound then
-        note('Full auto NOT VERIFIED: expected enemy folder missing; placement path unknown.')
+    if #S.inventory==0 then
+        note('NOT READY: roster IDs unavailable. Scan owned/equipped manually in UNITS.')
+    elseif not WS:FindFirstChild('_ENEMIES') then
+        note('NOT READY: enemy path folder missing. Avoid automatic placement.')
+    elseif not getRemote('spawn_unit') then
+        note('NOT READY: spawn_unit endpoint missing. Automatic placement unavailable.')
+    elseif S.farmTarget=='Rukia' then
+        note('Basic combat inputs found, but Dungeon room/chest logic is manual.')
+    elseif S.farmTarget=='Griffin' then
+        note('Basic combat inputs found; Infinite progression needs supervised testing.')
     else
-        note('Roster/path visible. Full auto is still experimental; supervise.')
+        note('Basic inputs found; no guarantee of working placement/upgrades.')
     end
 end)
 main=button('START FULL AUTO (OFF)',function(b)
     if not S.enabled and S.farmTarget~='Off' then
+        if (S.farmTarget=='Rukia' and S.mode~='Dungeon') or
+            (S.farmTarget=='Griffin' and S.mode~='Infinite') then
+            note('Goal farm mode mismatch: choose correct mode in PLAY.')
+            return
+        end
         if not isMatch() then
             note('Enter the '..(S.farmTarget=='Rukia' and 'Dungeon' or 'Infinite')..
                 ' match manually before testing combat automation.')
