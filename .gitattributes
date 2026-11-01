@@ -1,0 +1,2 @@
+# Preserve the archived v5 bytes, including inherited whitespace.
+legacy/** -whitespace
