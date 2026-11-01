@@ -2128,20 +2128,101 @@ tipDetail=mk('TextLabel',{Position=UDim2.fromOffset(9,33),
     Font=Enum.Font.Gotham,TextSize=11,TextWrapped=true,
     TextXAlignment=Enum.TextXAlignment.Left,TextColor3=Color3.fromRGB(231,250,239),
     ZIndex=26,Text='Recommendations only'},tipBanner)
-local scroll=mk('ScrollingFrame',{Position=UDim2.fromOffset(8,44),Size=UDim2.new(1,-16,0,344),
+local scroll=mk('ScrollingFrame',{Position=UDim2.fromOffset(8,121),Size=UDim2.new(1,-16,0,266),
     BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,CanvasSize=UDim2.fromOffset(0,750)},root)
 local flow=mk('UIListLayout',{Padding=UDim.new(0,6),FillDirection=Enum.FillDirection.Vertical,
     SortOrder=Enum.SortOrder.LayoutOrder},scroll)
 flow:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
     scroll.CanvasSize=UDim2.fromOffset(0,flow.AbsoluteContentSize.Y+12)
 end)
+-- Compact two-row section tabs. Actions are assigned to exactly one section.
+local sections={'PLAY','CARDS','FARM','REPORTS','UNITS','OTHER'}
+local sectionDescriptions={
+    PLAY='Select a mode. Full Auto is separate from card selection.',
+    CARDS='Pick a strategy. Card advice works with Full Auto OFF.',
+    FARM='Placement and upgrade options require Full Auto ON.',
+    REPORTS='Run log and auto-copy work during normal manual play.',
+    UNITS='Team scanner, counters, and learned equip settings.',
+    OTHER='Event rejoin, diagnostics, and script controls.'
+}
+local sectionPrefixes={
+    {'START FULL AUTO','PLAY'},{'MODE:','PLAY'},
+    {'AUTO CHOOSE BEST CARD','CARDS'},{'CARD STRATEGY','CARDS'},
+    {'SET BIG REWARDS','CARDS'},{'CARD ADVISOR','CARDS'},
+    {'COPY CARD CHOICES','CARDS'},
+    {'AUTO PLACE','FARM'},{'SMART SPOTS','FARM'},
+    {'REUSE GENERATED','FARM'},{'AUTO UPGRADE','FARM'},
+    {'SMART UPGRADE','FARM'},{'AUTO ABILITIES','FARM'},
+    {'AUTO START WAVES','FARM'},{'AUTO SKIP WAVES','FARM'},
+    {'AUTO REPLAY','FARM'},{'PRIORITIZE MONEY','FARM'},
+    {'CAUTIOUS WAVE','FARM'},{'PLACEMENTS PER UNIT','FARM'},
+    {'MAX TOTAL PLACEMENTS','FARM'},{'CLEAR THIS MAP MACRO','FARM'},
+    {'AUTO-LOG','REPORTS'},{'AUTO-COPY','REPORTS'},
+    {'COPY COMPLETE AUTO REPORT','REPORTS'},
+    {'SHOW AUTO REPORT STATUS','REPORTS'},
+    {'COPY MAP / BOSSES','REPORTS'},
+    {'COPY UNIT / PLACEMENT','REPORTS'},
+    {'COPY DIAGNOSTICS','REPORTS'},
+    {'SCOUT MAP','UNITS'},{'AUTO EQUIP','UNITS'},
+    {'SCAN ALL OWNED','UNITS'},{'RECOMMEND BEST TEAM','UNITS'},
+    {'LEARN EQUIP','UNITS'},{'STOP EQUIP','UNITS'},
+    {'SCAN EQUIPPED','UNITS'},
+    {'AUTO EVENT REJOIN','OTHER'},{'LEARN EVENT JOIN','OTHER'},
+    {'FINISH LEARNING','OTHER'},{'STOP + CLOSE GUI','OTHER'}
+}
+local function sectionForLabel(label)
+    local upper=string.upper(tostring(label or ''))
+    for _,prefix in ipairs(sectionPrefixes) do
+        if upper:sub(1,#prefix[1])==prefix[1] then return prefix[2] end
+    end
+    return 'OTHER'
+end
+local activeSection='CARDS'
+local tabButtons={}
+local menuItems={}
+local sectionHelp=mk('TextLabel',{LayoutOrder=0,Size=UDim2.new(1,-4,0,45),
+    BackgroundTransparency=1,Text=sectionDescriptions[activeSection],
+    TextColor3=C.focus,TextSize=11,TextWrapped=true,
+    Font=Enum.Font.Gotham,TextXAlignment=Enum.TextXAlignment.Left},scroll)
+local function selectSection(chosen)
+    activeSection=chosen
+    sectionHelp.Text=sectionDescriptions[chosen] or ''
+    for _,item in ipairs(menuItems) do
+        item.button.Visible=item.section==chosen
+    end
+    for key,tab in pairs(tabButtons) do
+        tab.BackgroundColor3=key==chosen and C.active or C.button
+        tab.TextColor3=C.text
+    end
+    scroll.CanvasPosition=Vector2.new(0,0)
+end
+for index,section in ipairs(sections) do
+    local col=(index-1)%3
+    local line=math.floor((index-1)/3)
+    local tab=mk('TextButton',{
+        Size=UDim2.fromOffset(96,30),
+        Position=UDim2.fromOffset(11+col*101,45+line*34),
+        Text=section,
+        BackgroundColor3=section==activeSection and C.active or C.button,
+        BorderSizePixel=0,TextColor3=C.text,
+        TextSize=11,Font=Enum.Font.GothamBold,
+        AutoButtonColor=true},root)
+    mk('UICorner',{CornerRadius=UDim.new(0,7)},tab)
+    tab.MouseButton1Click:Connect(function()
+        if S.alive then selectSection(section) end
+    end)
+    tabButtons[section]=tab
+end
 local order=0
-local function button(txt,cb)
+local function button(txt,cb,groupOverride)
     order=order+1
-    local b=mk('TextButton',{LayoutOrder=order,Size=UDim2.new(1,-4,0,38),
-        Text=txt,BackgroundColor3=C.button,BorderSizePixel=0,TextColor3=C.text,
+    local section=groupOverride or sectionForLabel(txt)
+    local b=mk('TextButton',{LayoutOrder=order,Size=UDim2.new(1,-4,0,41),
+        Text=txt,Visible=section==activeSection,
+        BackgroundColor3=C.button,BorderSizePixel=0,TextColor3=C.text,
         Font=Enum.Font.GothamSemibold,TextSize=12,AutoButtonColor=true},scroll)
     mk('UICorner',{CornerRadius=UDim.new(0,7)},b)
+    menuItems[#menuItems+1]={button=b,section=section}
     b.MouseButton1Click:Connect(function() if S.alive then cb(b) end end)
     return b
 end
@@ -2210,7 +2291,7 @@ local function toggle(label,key)
         b.Text=label..': '..(S.options[key] and 'ON' or 'OFF')
         b.BackgroundColor3=S.options[key] and C.active or C.muted
         saveSettings()
-    end)
+    end,sectionForLabel(label))
     b.Text=label..': '..(S.options[key] and 'ON' or 'OFF')
     b.BackgroundColor3=S.options[key] and C.active or C.muted
     return b
@@ -2432,7 +2513,9 @@ UIS.InputChanged:Connect(function(input)
 end)
 shrink.MouseButton1Click:Connect(function()
     local open=scroll.Visible
-    scroll.Visible=not open;info.Visible=not open
+    scroll.Visible=not open
+    info.Visible=not open
+    for _,tab in pairs(tabButtons) do tab.Visible=not open end
     root.Size=open and UDim2.fromOffset(318,42) or UDim2.fromOffset(318,442)
     shrink.Text=open and '+' or '_'
 end)
