@@ -1562,6 +1562,7 @@ end
 -- Defaults to advisor mode. Automatic input requires a detectable, distinct set of
 -- options and executor-provided UI input support. This is NOT a guaranteed clear.
 local gui -- forward declaration; assigned when the mobile UI is created
+local tipBanner,tipTitle,tipDetail -- always-visible card recommendation overlay
 local function cleanText(s)
     s=tostring(s or ''):gsub('<.->',' '):gsub('%s+',' ')
     return (s:gsub('^%s+',''):gsub('%s+$',''))
@@ -1725,8 +1726,9 @@ local function scoreCard(raw)
                   tonumber(t:match('drop[^%%]*%+(%d+)%%')) or
                   tonumber(t:match('%+(%d+)%%%s*april%s*coins')) or
                   tonumber(t:match('(%d+)%%[^|]-currency'))
-        local gain=math.clamp((pct or 15)*0.35,5,35)
-        plus(gain,'event reward')
+        local gain=math.clamp((pct or 15)*(S.goal=='Rewards' and 2.65 or 0.35),
+            5,S.goal=='Rewards' and 100 or 35)
+        plus(gain,'event reward (+'..tostring(pct or '?')..'%)')
     end
     if has('curse') and benefit==0 and risk==0 then minus(25,'unknown curse') end
     -- Late-run failure costs multiply; reward mode tolerates more risk.
@@ -1734,9 +1736,9 @@ local function scoreCard(raw)
     local remaining=(S.mode=='Event' and math.max(0,30-w)) or (S.mode=='Dungeon' and 20) or 30
     local stageRisk=(w>=20 and 1.35 or w>=10 and 1.15 or 1)
     if S.goal=='Safe' then score=score-risk*.55*stageRisk
-    elseif S.goal=='Rewards' then score=score+risk*.28
+    elseif S.goal=='Rewards' then score=score-risk*.12*stageRisk
     else score=score-risk*.15*stageRisk end
-    if remaining<=10 then score=score-risk*.15 end
+    if remaining<=10 then score=score-risk*(S.goal=='Rewards' and .22 or .15) end
     return math.floor(score*10)/10,risk,benefit,table.concat(reasons,', ')
 end
 local function decideCards()
@@ -1780,19 +1782,38 @@ local function tryCardPress(btn)
     return ok,ok and 'VIM click' or tostring(why)
 end
 local function tickCards()
-    if not S.options.cardAdvisor or not isMatch() or isFinished() then return end
+    if not S.options.cardAdvisor or not isMatch() or isFinished() then
+        if tipBanner then tipBanner.Visible=false end
+        return
+    end
     local decision=decideCards()
-    if not decision then return end
+    if not decision then
+        if tipBanner then tipBanner.Visible=false end
+        return
+    end
+    if tipBanner and tipTitle and tipDetail then
+        local first=tostring(decision.entry.text):match('^[^|]+') or tostring(decision.entry.text)
+        first=cleanText(first):sub(1,46)
+        tipTitle.Text='PICK: '..first
+        local strategy=S.goal=='Rewards' and 'BIG REWARDS' or
+            (S.goal=='Safe' and 'SAFE CLEAR' or 'BALANCED')
+        local confidence=decision.margin<6 and ' | CLOSE CALL' or ''
+        tipDetail.Text=strategy..' | auto '..(S.options.autoCards and 'ON' or 'OFF')..
+            ' | score '..math.floor(decision.entry.score)..confidence
+        tipBanner.Visible=true
+    end
     if decision.key~=S.lastCardKey and os.clock()-S.lastCardAlert>3 then
         S.lastCardKey=decision.key
         S.lastCardAlert=os.clock()
         note('CARD ADVISOR: '..S.cardStatus)
     end
-    if not S.options.autoCards or not S.enabled then return end
-    if decision.margin<8 or decision.count>4 or decision.count<2 then return end
+    -- Card choosing is independent of FULL AUTO for Fool's Hunt random units.
+    if not S.options.autoCards then return end
+    if decision.margin<6 or decision.count>4 or decision.count<2 then return end
     -- Never auto-click unless at least two distinct, readable alternatives are present.
     if os.clock()-S.lastCardAttempt<12 then return end
-    if decision.entry.risk>55 and S.goal=='Safe' then return end
+    local riskCap=S.goal=='Safe' and 55 or S.goal=='Rewards' and 72 or 65
+    if decision.entry.risk>riskCap then return end
     -- Powers are target-sensitive actions; card voting does not cast spells.
     local lc=decision.entry.text:lower()
     for _,spell in ipairs({'astral summon','astral gate','ritual','clone','merge',
@@ -2091,6 +2112,22 @@ local info=mk('TextLabel',{Size=UDim2.new(1,-18,0,41),Position=UDim2.fromOffset(
     BackgroundTransparency=1,TextWrapped=true,TextColor3=C.focus,
     TextSize=11,Font=Enum.Font.Gotham,Text=S.status},root)
 S.statusText=info
+-- Visible near the top even when the main menu is minimized.
+tipBanner=mk('Frame',{Size=UDim2.fromOffset(308,65),
+    Position=UDim2.new(.5,-154,0,30),BackgroundColor3=Color3.fromRGB(23,91,74),
+    BackgroundTransparency=.06,BorderSizePixel=0,Visible=false,
+    ZIndex=25},gui)
+mk('UICorner',{CornerRadius=UDim.new(0,10)},tipBanner)
+tipTitle=mk('TextLabel',{Position=UDim2.fromOffset(9,6),
+    Size=UDim2.new(1,-18,0,26),BackgroundTransparency=1,
+    Font=Enum.Font.GothamBold,TextSize=14,TextWrapped=true,
+    TextXAlignment=Enum.TextXAlignment.Left,TextColor3=Color3.fromRGB(255,255,255),
+    ZIndex=26,Text='PICK: waiting for cards'},tipBanner)
+tipDetail=mk('TextLabel',{Position=UDim2.fromOffset(9,33),
+    Size=UDim2.new(1,-18,0,26),BackgroundTransparency=1,
+    Font=Enum.Font.Gotham,TextSize=11,TextWrapped=true,
+    TextXAlignment=Enum.TextXAlignment.Left,TextColor3=Color3.fromRGB(231,250,239),
+    ZIndex=26,Text='Recommendations only'},tipBanner)
 local scroll=mk('ScrollingFrame',{Position=UDim2.fromOffset(8,44),Size=UDim2.new(1,-16,0,344),
     BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,CanvasSize=UDim2.fromOffset(0,750)},root)
 local flow=mk('UIListLayout',{Padding=UDim.new(0,6),FillDirection=Enum.FillDirection.Vertical,
@@ -2161,7 +2198,19 @@ button('SHOW AUTO REPORT STATUS',function()
     note('Reporter '..(S.options.autoReport and 'ON' or 'OFF')..' | lines='..#reporter.lines..
         ' | local file='..tostring(reporter.filesOK)..' | '..REPORT_FILE)
 end)
-toggle('AUTO PICK CARDS (experimental)','autoCards')
+local autoCardButton
+autoCardButton=button('AUTO CHOOSE BEST CARD: '..(S.options.autoCards and 'ON' or 'OFF'),
+    function(b)
+        S.options.autoCards=not S.options.autoCards
+        if S.options.autoCards then S.options.cardAdvisor=true end
+        b.Text='AUTO CHOOSE BEST CARD: '..(S.options.autoCards and 'ON' or 'OFF')
+        b.BackgroundColor3=S.options.autoCards and C.active or C.muted
+        saveSettings()
+        note(S.options.autoCards and
+            'AUTO CARD ON (experimental): card choices only; FULL AUTO remains separate'
+            or 'AUTO CARD OFF: recommendations remain visible')
+    end)
+autoCardButton.BackgroundColor3=S.options.autoCards and C.active or C.muted
 toggle('CAUTIOUS WAVE SKIP','cautiousSkip')
 toggle('SCOUT MAP / ENEMY COUNTERS','stageScout')
 toggle('AUTO EQUIP RECOMMENDED (learn first)','autoEquip')
@@ -2222,12 +2271,22 @@ button('STOP EQUIP LEARNING',function()
     S.equipLearning=false
     note('Equip learning stopped')
 end)
-button('CARD GOAL: '..S.goal..' (tap to change)',function(b)
+local function cardStrategyText()
+    return S.goal=='Rewards' and 'BIG REWARDS (AprilCoins)'
+        or (S.goal=='Safe' and 'SAFE CLEAR' or 'BALANCED')
+end
+local strategyButton
+strategyButton=button('CARD STRATEGY: '..cardStrategyText()..' (tap)',function(b)
     local goals={'Safe','Balanced','Rewards'}
     local n=table.find(goals,S.goal) or 2
     S.goal=goals[n%#goals+1]
-    b.Text='CARD GOAL: '..S.goal..' (tap to change)'
-    saveSettings();note('Card goal changed to '..S.goal)
+    b.Text='CARD STRATEGY: '..cardStrategyText()..' (tap)'
+    saveSettings();note('Card strategy: '..cardStrategyText())
+end)
+button('SET BIG REWARDS (APRILCOINS)',function()
+    S.goal='Rewards'
+    strategyButton.Text='CARD STRATEGY: '..cardStrategyText()..' (tap)'
+    saveSettings();note('BIG REWARDS selected: prioritize AprilCoins while rating curse risk')
 end)
 button('COPY CARD CHOICES / DEBUG',function()
     local result={'AA SMART CARD SCAN | mode='..S.mode..' map='..S.map..' wave='..wave()..
@@ -2400,6 +2459,13 @@ task.spawn(function()
         elseif not S.options.autoReport and reporter.active then
             pcall(function() finishReport('Auto-report turned off') end)
         end
+        -- Advice/auto-card picking works during manual play; FULL AUTO stays off.
+        if S.options.cardAdvisor and os.clock()-(S.lastCardScan or 0)>1.1 then
+            S.lastCardScan=os.clock()
+            pcall(tickCards)
+        elseif not S.options.cardAdvisor and tipBanner then
+            tipBanner.Visible=false
+        end
         if S.enabled then
             local now=os.clock()
             if isMatch() then
@@ -2431,10 +2497,6 @@ task.spawn(function()
                         task.spawn(function() call('vote_start') end)
                     end
                     if isStarted() then
-                        if S.options.cardAdvisor and now-(S.lastCardScan or 0)>1.5 then
-                            S.lastCardScan=now
-                            pcall(tickCards)
-                        end
                         if S.options.place then placeOne() end
                         if S.options.upgrade and now-run.lastUpgrade>3 then
                             run.lastUpgrade=now;upgradeOne()
