@@ -38,6 +38,10 @@ local S = {
     inventory={}, inventoryAt=0, logs={}, unitReport={}, planReport={}, upgradeReport={}, lastPlanner=0, threatReport={},
 }
 ENV.K_AA_V5 = S
+-- Read-only action signatures to learn event-specific placement/spell interfaces.
+-- No UUID, account data, string content, or server payload is stored here.
+S.eventActionBuffer={}
+S.eventActionSeen={}
 local run = {unitsFolder=nil, key='', count={}, records={}, savedIndex=1, nextSlot=1,
     candidate=1, pending=nil, lastPlace=0, lastUpgrade=0, lastAbility=0, lastStart=0,
     lastSkip=0, lastReplay=0, lastQueue=0, lastSave=0, hadResult=false,
@@ -1537,6 +1541,48 @@ local function installCapture()
                     end
                 end
             end
+            if S.alive and S.options.autoReport and S.mode=='Event'
+                and isMatch() and #S.eventActionBuffer<30 then
+                local method=getnamecallmethod()
+                local own=type(checkcaller)=='function' and checkcaller()
+                if not own and (method=='FireServer' or method=='InvokeServer')
+                    and typeof(self)=='Instance' and self:IsDescendantOf(RS) then
+                    local name=tostring(self.Name)
+                    local low=name:lower()
+                    local relevant=low:find('place',1,true) or low:find('spawn',1,true)
+                        or low:find('spell',1,true) or low:find('card',1,true)
+                        or low:find('offer',1,true) or low:find('ability',1,true)
+                        or low:find('unit',1,true)
+                    if relevant and not low:find('purchase',1,true)
+                        and not low:find('buy',1,true)
+                        and not low:find('summon',1,true) then
+                        local args=table.pack(...)
+                        local shape={}
+                        for i=1,math.min(args.n,7) do
+                            local v=args[i]
+                            local typ=typeof(v)
+                            if typ=='table' then
+                                local keys={};local count=0
+                                for key in pairs(v) do
+                                    count=count+1
+                                    if #keys<4 then keys[#keys+1]=type(key) end
+                                    if count>=16 then break end
+                                end
+                                typ='table['..table.concat(keys,',')..']'
+                            elseif typ=='string' then
+                                typ='string('..math.min(#v,999)..')'
+                            end
+                            shape[#shape+1]=typ
+                        end
+                        local signature=name..'/'..method..' args='..args.n..
+                            ' ['..table.concat(shape,', ')..']'
+                        if not S.eventActionSeen[signature] then
+                            S.eventActionSeen[signature]=true
+                            S.eventActionBuffer[#S.eventActionBuffer+1]=signature
+                        end
+                    end
+                end
+            end
             return old(self,...)
         end))
     end)
@@ -1699,7 +1745,11 @@ local function scoreCard(raw)
     if any({'new path','extra path','additional path','enemy paths','more paths'}) then minus(72,'extra lanes') end
     if any({'curse of chaos','all curses are random'}) then minus(90,'random curses') end
     if any({'curse of burst','burst trait','faster spawns','spawn frequency'}) then minus(76,'burst') end
-    if any({'curse of frenzy','curse of wind','fast enemies','enemy speed','enemies move faster'}) then minus(42,'enemy speed') end
+    if any({'curse of frenzy','curse of wind','fast enemies','enemy speed','enemies move faster'}) then
+        -- Repeated Wave 8-16 losses: speed shortens the time available to kill.
+        local severe=S.mode=='Event' and wave()<=18
+        minus(severe and 77 or 55,'enemy speed')
+    end
     if any({'curse of flight','flying trait','flying enemies'}) then minus(50,'air threat') end
     if any({'curse of shielding','shield','curse of armor','armr trait'}) then minus(36,'shields/armor') end
     if any({'curse of vamp','curse of regen','regeneration','enemies regenerate','enemy regen'}) then minus(42,'regeneration') end
@@ -1710,6 +1760,19 @@ local function scoreCard(raw)
     local magicResist=any({'enemy magic resist','enemies magic resist'})
     if physicalResist then minus(28,'enemy physical resist') end
     if magicResist then minus(28,'enemy magic resist') end
+    if magicResist and S.mode=='Event' then
+        local magic,physical=0,0
+        for _,tower in ipairs(ownUnits()) do
+            local st=tower:FindFirstChild('_stats')
+            local typ=lower(stat(st,{'damage_type','attack_affinity','element','affinity',
+                'attack_type','damage_affinity'}))
+            if contains(typ,'magic') then magic=magic+1
+            elseif contains(typ,'physical') then physical=physical+1 end
+        end
+        if magic>=2 and magic>physical then
+            minus(28,'magic-heavy active team')
+        end
+    end
     if has('resistant enemies') and not physicalResist and not magicResist then
         minus(45,'enemy resistance')
     end
@@ -1941,6 +2004,23 @@ local function unitSnapshot()
     return 'placed='..#units..' yen='..tostring(scanMoney() or '?')..
         ' towers='..table.concat(sample,', ')
 end
+local function enemyFolderProbe()
+    local names={};local checked=0
+    for _,item in ipairs(WS:GetChildren()) do
+        checked=checked+1
+        if checked>85 then break end
+        if item:IsA('Folder') or item:IsA('Model') then
+            if #names<22 then
+                local count=0
+                for _,child in ipairs(item:GetChildren()) do
+                    if child:IsA('Model') then count=count+1 end
+                end
+                names[#names+1]=tostring(item.Name):sub(1,40)..'('..count..' models)'
+            end
+        end
+    end
+    return 'top-level workspace containers='..table.concat(names,', ')
+end
 local function enemySnapshot()
     local folder=WS:FindFirstChild('_ENEMIES')
     if not folder then return 'enemy folder not visible' end
@@ -1964,6 +2044,7 @@ local function startReport()
     reporter.lastWave=-1;reporter.seenCards={};reporter.seenBosses={};reporter.seenThreats={};reporter.seenConfirms={}
     reporter.lastCardsAt=0;reporter.lastEnemiesAt=0
     reporter.pendingEndAt=0;reporter.finalEnemyLogged=false
+    S.eventActionBuffer={};S.eventActionSeen={}
     reporter.session=reporter.session+1
     reporter.lines={}
     pcall(function() S.map=mapId();stageData();scanEquipped() end)
@@ -1977,6 +2058,12 @@ local function startReport()
         tostring((S.stageData or {}).name or '?')..
         ' | equipped='..table.concat(equipped,', '),false)
     note('AUTO REPORT recording | no need to start full auto')
+    if S.mode=='Event' then
+        recordLine('EVENT AUTOPLAY STATUS',
+            'Fool Hunt replaces equipped units. Standard equipped scan='..
+            #S.inventory..' | event random-offer / spell adapter NOT validated.',false)
+        recordLine('WORKSPACE PROBE',enemyFolderProbe(),false)
+    end
 end
 local function finishReport(reason)
     if not reporter.active then return end
@@ -2016,6 +2103,13 @@ local function tickReporter()
         end
     end
     local now=os.clock()
+    if #S.eventActionBuffer>0 then
+        local buffer=S.eventActionBuffer
+        S.eventActionBuffer={}
+        for _,signature in ipairs(buffer) do
+            recordLine('EVENT ACTION SHAPE',signature,false)
+        end
+    end
     if now-reporter.lastEnemiesAt>=2.5 and not finished then
         reporter.lastEnemiesAt=now
         local ok=pcall(v5ScanStage)
@@ -2148,7 +2242,7 @@ local sectionDescriptions={
     OTHER='Event matchmaking and script controls.'
 }
 local sectionPrefixes={
-    {'START FULL AUTO','PLAY'},{'MODE:','PLAY'},
+    {'START FULL AUTO','PLAY'},{'CHECK EVENT AUTO-PLAY','PLAY'},{'MODE:','PLAY'},
     {'AUTO CHOOSE BEST CARD','CARDS'},{'CARD STRATEGY','CARDS'},
     {'SET BIG REWARDS','CARDS'},{'CARD ADVISOR','CARDS'},
     {'COPY CARD CHOICES','CARDS'},
@@ -2230,6 +2324,22 @@ local function button(txt,cb,groupOverride)
     return b
 end
 local main
+button('CHECK EVENT AUTO-PLAY READINESS',function()
+    if not isMatch() then
+        note('Readiness: enter the event first. Full Auto is experimental.')
+        return
+    end
+    local readyRoster=#S.inventory>0
+    local pathFound=WS:FindFirstChild('_ENEMIES')~=nil
+    if S.mode=='Event' and not readyRoster then
+        note('Event full auto NOT READY: random offered units are not scanned as equipped. '..
+            'Use manual units + Auto Cards and send EVENT ACTION SHAPE report.')
+    elseif not pathFound then
+        note('Full auto NOT VERIFIED: expected enemy folder missing; placement path unknown.')
+    else
+        note('Roster/path visible. Full auto is still experimental; supervise.')
+    end
+end)
 main=button('START FULL AUTO (OFF)',function(b)
     S.enabled=not S.enabled
     b.Text=S.enabled and 'STOP FULL AUTO (RUNNING)' or 'START FULL AUTO (OFF)'
