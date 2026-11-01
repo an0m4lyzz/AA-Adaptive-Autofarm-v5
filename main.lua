@@ -2372,7 +2372,8 @@ button('CHECK FARM READINESS',function()
     elseif S.farmTarget=='Rukia' then
         note('Basic combat inputs found, but Dungeon room/chest logic is manual.')
     elseif S.farmTarget=='Griffin' then
-        note('Basic combat inputs found; Infinite progression needs supervised testing.')
+        note('Griffin evolution farming: equip base Griffin and let it hit enemies '..
+            'for takedowns; placement still needs supervised testing.')
     else
         note('Basic inputs found; no guarantee of working placement/upgrades.')
     end
@@ -2446,8 +2447,8 @@ targetButton=button('FARM TARGET: '..string.upper(S.farmTarget)..' (tap)',functi
         note('RUKIA: Dungeon rare chests. Keys, rooms, and chests are manual for now.')
     elseif S.farmTarget=='Griffin' then
         S.mode='Infinite'
-        note('GRIFFIN: farm gems in Infinite; summon on rate-up manually. '..
-            'After summoning, use Griffin for takedowns.')
+        note('GRIFFIN OWNED: use Infinite to build 7,500 takedowns/assists. '..
+            'Check Periapt Ascension manually; no unit sacrifices automated.')
     else
         note('Farm target disabled; existing modes are unchanged.')
     end
@@ -2468,11 +2469,13 @@ button('COPY FARM GUIDE / CHECKLIST',function()
         lines[#lines+1]='4. Snow Reaper (War) is chance-based; no guaranteed number of runs.'
         lines[#lines+1]='5. Replay with a new key is never automated by this preset.'
     elseif S.farmTarget=='Griffin' then
-        lines[#lines+1]='1. Choose an Infinite stage you can consistently survive for gem milestones.'
-        lines[#lines+1]='2. Check whether base Griffin is currently in a summon banner.'
-        lines[#lines+1]='3. Summon manually: no automatic gem spending.'
-        lines[#lines+1]='4. Once owned, bring Griffin for 7,500 takedowns and work on ascension.'
-        lines[#lines+1]='5. No Mythic sacrifices are automated.'
+        lines[#lines+1]='1. You already own Griffin. Equip the BASE Griffin before entering Infinite.'
+        lines[#lines+1]='2. Choose an easy Infinite map so Griffin gets 7,500 takedowns (assists count).'
+        lines[#lines+1]='3. Check the Griffin unit details in-game for remaining takedowns.'
+        lines[#lines+1]='4. Reach 100% Ascension with the Periapt/Egg of the King (manual).'
+        lines[#lines+1]='5. Ascend Griffin only after requirements are met (manual confirmation).'
+        lines[#lines+1]='6. If Griffin is already evolved, select Rukia Dungeon instead.'
+        lines[#lines+1]='No banner summon, auto-sacrifice, or auto-evolution is attempted.'
     else
         lines[#lines+1]='Choose FARM TARGET in PLAY to select Rukia or Griffin.'
     end
