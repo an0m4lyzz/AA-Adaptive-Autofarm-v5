@@ -19,12 +19,20 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/an0m4lyzz/AA-Adaptive
 
 ## New: in-game card advice and big rewards (experimental)
 
-The **card controls are at the top of the mobile menu**, immediately after MODE.
+The mobile menu now uses **six touch-friendly tabs**. It opens on **CARDS** by default:
 
-1. Keep **MODE: Event** and **START FULL AUTO: OFF** if you want to play Fool's Hunt normally.
-2. Keep **CARD ADVISOR: ON** (default). When card choices are visible, a floating green **PICK:** banner recommends a card, even if the menu is minimized.
-3. **AUTO CHOOSE BEST CARD** is OFF by default. Turn it ON if you want the script to try clicking a high-confidence card recommendation. It works independently of placement/upgrade autofarming.
-4. **CARD STRATEGY** cycles SAFE CLEAR, BALANCED, BIG REWARDS. **SET BIG REWARDS (APRILCOINS)** is a one-tap shortcut.
+| Tab | Features |
+| --- | --- |
+| **PLAY** | Mode selector and Start/Stop Full Auto |
+| **CARDS** | Card advisor, auto-pick toggle, strategies, AprilCoins |
+| **FARM** | Placement, upgrades, abilities, wave control and limits |
+| **REPORTS** | Auto-run logging, clipboard copies and diagnostics |
+| **UNITS** | Roster and team scan, recommendations, equip settings |
+| **OTHER** | Event rejoin learning and close button |
+
+For **Fool's Hunt**, go to **PLAY** to confirm MODE: Event, and keep START FULL AUTO OFF if manually placing/upgrading towers. In **CARDS**, keep CARD ADVISOR ON (default), optionally turn on AUTO CHOOSE BEST CARD (default OFF), then choose SAFE CLEAR, BALANCED, or BIG REWARDS. A floating PICK banner provides suggestions whenever the script detects valid cards.
+
+Changing tabs does **not** enable autofarming or change saved settings. Auto-pick is independent of full farming. Turning the card advisor OFF also turns auto-pick OFF. A saved auto-pick ON state will reactivate the adviser on the next load.
 
 **Big Rewards** assigns greater weight to visible AprilCoins bonuses; when several cards give the same bonus, it tends to prefer the lower-risk curse. It does **not** guarantee more currency, a clear, or the optimal choice. Aggressive curses can end a run sooner.
 
