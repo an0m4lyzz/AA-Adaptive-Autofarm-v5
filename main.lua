@@ -33,7 +33,7 @@ local S = {
         farming=true, savedMacros=true, maxTotal=16, maxEach=3,
         cardAdvisor=true, autoCards=false, cautiousSkip=true, autoEquip=false, stageScout=true,
         autoReport=true, autoCopyReport=true},
-    goal='Balanced', cardSnapshot={}, cardHistory={}, lastCardKey='',
+    goal='Balanced', farmTarget='Off', cardSnapshot={}, cardHistory={}, lastCardKey='',
     lastCardAttempt=0, lastCardAlert=0, cardConfidence=0, cardStatus='No cards detected', 
     inventory={}, inventoryAt=0, logs={}, unitReport={}, planReport={}, upgradeReport={}, lastPlanner=0, threatReport={},
 }
@@ -67,6 +67,9 @@ local function readSettings()
     if type(data.cardHistory)=='table' then S.cardHistory=data.cardHistory end
     if type(data.eventQueue)=='table' then S.eventQueue=data.eventQueue end
     if data.goal=='Safe' or data.goal=='Balanced' or data.goal=='Rewards' then S.goal=data.goal end
+    if data.farmTarget=='Off' or data.farmTarget=='Rukia' or data.farmTarget=='Griffin' then
+        S.farmTarget=data.farmTarget
+    end
     if type(data.mode)=='string' and table.find(modes,data.mode) then S.mode=data.mode end
     if type(data.options)=='table' then
         for k,v in pairs(S.options) do
@@ -82,7 +85,8 @@ local function saveSettings()
     if type(writefile)~='function' then return false end
     local ok=pcall(function()
         writefile(FILENAME,HTTP:JSONEncode({maps=S.maps,mapIntel=S.mapIntel,equipTemplate=S.equipTemplate,eventQueue=S.eventQueue,
-            mode=S.mode,options=S.options,goal=S.goal,cardHistory=S.cardHistory}))
+            mode=S.mode,options=S.options,goal=S.goal,farmTarget=S.farmTarget,
+            cardHistory=S.cardHistory}))
     end)
     return ok
 end
@@ -2074,6 +2078,11 @@ local function startReport()
         tostring((S.stageData or {}).name or '?')..
         ' | equipped='..table.concat(equipped,', '),false)
     note('AUTO REPORT recording | no need to start full auto')
+    if S.farmTarget~='Off' then
+        recordLine('FARM OBJECTIVE','target='..S.farmTarget..
+            ' | mode='..S.mode..
+            ' | automatic dungeon rooms/chests/summoning: NOT VERIFIED',false)
+    end
     if S.mode=='Event' then
         recordLine('EVENT AUTOPLAY STATUS',
             'Fool Hunt replaces equipped units. Standard equipped scan='..
@@ -2258,7 +2267,8 @@ local sectionDescriptions={
     OTHER='Event matchmaking and script controls.'
 }
 local sectionPrefixes={
-    {'START FULL AUTO','PLAY'},{'CHECK EVENT AUTO-PLAY','PLAY'},{'MODE:','PLAY'},
+    {'START FULL AUTO','PLAY'},{'CHECK EVENT AUTO-PLAY','PLAY'},
+    {'MODE:','PLAY'},{'FARM TARGET:','PLAY'},{'COPY FARM GUIDE','PLAY'},
     {'AUTO CHOOSE BEST CARD','CARDS'},{'CARD STRATEGY','CARDS'},
     {'SET BIG REWARDS','CARDS'},{'CARD ADVISOR','CARDS'},
     {'COPY CARD CHOICES','CARDS'},
@@ -2357,6 +2367,27 @@ button('CHECK EVENT AUTO-PLAY READINESS',function()
     end
 end)
 main=button('START FULL AUTO (OFF)',function(b)
+    if not S.enabled and S.farmTarget~='Off' then
+        if not isMatch() then
+            note('Enter the '..(S.farmTarget=='Rukia' and 'Dungeon' or 'Infinite')..
+                ' match manually before testing combat automation.')
+            return
+        end
+        if #S.inventory==0 then
+            note('Goal farm not ready: no equipped-unit IDs found. '..
+                'Go to UNITS and inspect equipped roster manually first.')
+            return
+        end
+        if not WS:FindFirstChild('_ENEMIES') then
+            note('Goal farm not ready: enemy path folder is missing. '..
+                'Keep manual control; send report.')
+            return
+        end
+        if not getRemote('spawn_unit') then
+            note('Goal farm not ready: placement remote is unavailable.')
+            return
+        end
+    end
     if not S.enabled and S.mode=='Event' and #S.inventory==0 then
         note('Event autoplay not ready: no equipped roster. Leave Full Auto OFF; use CARDS instead.')
         return
@@ -2372,12 +2403,69 @@ main=button('START FULL AUTO (OFF)',function(b)
         note('AUTO STOPPED. Saved macros retained.')
     end
 end)
-button('MODE: '..S.mode..' (tap to change)',function(b)
+local modeButton
+local targetButton
+modeButton=button('MODE: '..S.mode..' (tap to change)',function(b)
     local idx=table.find(modes,S.mode) or 1
     S.mode=modes[idx%#modes+1]
     b.Text='MODE: '..S.mode..' (tap to change)'
+    if (S.farmTarget=='Rukia' and S.mode~='Dungeon') or
+        (S.farmTarget=='Griffin' and S.mode~='Infinite') then
+        S.farmTarget='Off'
+        if targetButton then targetButton.Text='FARM TARGET: OFF (tap)' end
+    end
     if isMatch() then S.map=mapId();run.key=currentKey();run.savedIndex=1 end
     saveSettings();note('Selected '..S.mode)
+end)
+targetButton=button('FARM TARGET: '..string.upper(S.farmTarget)..' (tap)',function(b)
+    if S.enabled or isMatch() then
+        note('Change the farm target only in the lobby, while Full Auto is OFF.')
+        return
+    end
+    local choices={'Off','Rukia','Griffin'}
+    local idx=table.find(choices,S.farmTarget) or 1
+    S.farmTarget=choices[idx%#choices+1]
+    if S.farmTarget=='Rukia' then
+        S.mode='Dungeon'
+        note('RUKIA: Dungeon rare chests. Keys, rooms, and chests are manual for now.')
+    elseif S.farmTarget=='Griffin' then
+        S.mode='Infinite'
+        note('GRIFFIN: farm gems in Infinite; summon on rate-up manually. '..
+            'After summoning, use Griffin for takedowns.')
+    else
+        note('Farm target disabled; existing modes are unchanged.')
+    end
+    modeButton.Text='MODE: '..S.mode..' (tap to change)'
+    b.Text='FARM TARGET: '..string.upper(S.farmTarget)..' (tap)'
+    saveSettings()
+end)
+button('COPY FARM GUIDE / CHECKLIST',function()
+    local lines={'[K] ANIME ADVENTURES GOAL FARM',
+        'Selected='..S.farmTarget..' Mode='..S.mode,
+        'FULL AUTO='..tostring(S.enabled),
+        'Combat autofarm requires observed unit IDs, enemy paths and valid placement endpoint.',
+        'Automatic keys, chests, summoning, sacrifices and rerolls are DISABLED.'}
+    if S.farmTarget=='Rukia' then
+        lines[#lines+1]='1. Acquire/verify a Dungeon Key and enter Dungeon manually.'
+        lines[#lines+1]='2. Clear the random Dungeon rooms (20 depths); prefer rare/golden chest outcomes.'
+        lines[#lines+1]='3. Keep rare chests until the final boss; check in-game rules before opening.'
+        lines[#lines+1]='4. Snow Reaper (War) is chance-based; no guaranteed number of runs.'
+        lines[#lines+1]='5. Replay with a new key is never automated by this preset.'
+    elseif S.farmTarget=='Griffin' then
+        lines[#lines+1]='1. Choose an Infinite stage you can consistently survive for gem milestones.'
+        lines[#lines+1]='2. Check whether base Griffin is currently in a summon banner.'
+        lines[#lines+1]='3. Summon manually: no automatic gem spending.'
+        lines[#lines+1]='4. Once owned, bring Griffin for 7,500 takedowns and work on ascension.'
+        lines[#lines+1]='5. No Mythic sacrifices are automated.'
+    else
+        lines[#lines+1]='Choose FARM TARGET in PLAY to select Rukia or Griffin.'
+    end
+    local txt=table.concat(lines,'\n')
+    if type(setclipboard)=='function' and pcall(function() setclipboard(txt) end) then
+        note('Target farm guide copied; '..S.farmTarget)
+    else
+        print(txt);note('Target farm guide printed to executor console')
+    end
 end)
 -- Fool's Hunt card controls appear immediately under MODE for easy mobile access.
 local advisorBtn
@@ -2718,7 +2806,8 @@ task.spawn(function()
                         run.hadResult=true;S.run=S.run+1
                         saveSettings();note('Completed run #'..S.run..' | '..S.map)
                     end
-                    if S.options.replay and now-run.lastReplay>9 then
+                    if S.options.replay and S.farmTarget~='Rukia'
+                        and now-run.lastReplay>9 then
                         run.lastReplay=now
                         task.spawn(function() call('set_game_finished_vote','replay') end)
                     end
