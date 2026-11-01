@@ -2165,6 +2165,37 @@ button('MODE: '..S.mode..' (tap to change)',function(b)
     if isMatch() then S.map=mapId();run.key=currentKey();run.savedIndex=1 end
     saveSettings();note('Selected '..S.mode)
 end)
+-- Fool's Hunt card controls appear immediately under MODE for easy mobile access.
+local autoCardButton
+autoCardButton=button('AUTO CHOOSE BEST CARD: '..(S.options.autoCards and 'ON' or 'OFF'),
+    function(b)
+        S.options.autoCards=not S.options.autoCards
+        if S.options.autoCards then S.options.cardAdvisor=true end
+        b.Text='AUTO CHOOSE BEST CARD: '..(S.options.autoCards and 'ON' or 'OFF')
+        b.BackgroundColor3=S.options.autoCards and C.active or C.muted
+        saveSettings()
+        note(S.options.autoCards and
+            'AUTO CARD ON (experimental): card choices only; FULL AUTO remains separate'
+            or 'AUTO CARD OFF: recommendations remain visible')
+    end)
+autoCardButton.BackgroundColor3=S.options.autoCards and C.active or C.muted
+local function cardStrategyText()
+    return S.goal=='Rewards' and 'BIG REWARDS (AprilCoins)'
+        or (S.goal=='Safe' and 'SAFE CLEAR' or 'BALANCED')
+end
+local strategyButton
+strategyButton=button('CARD STRATEGY: '..cardStrategyText()..' (tap)',function(b)
+    local goals={'Safe','Balanced','Rewards'}
+    local n=table.find(goals,S.goal) or 2
+    S.goal=goals[n%#goals+1]
+    b.Text='CARD STRATEGY: '..cardStrategyText()..' (tap)'
+    saveSettings();note('Card strategy: '..cardStrategyText())
+end)
+button('SET BIG REWARDS (APRILCOINS)',function()
+    S.goal='Rewards'
+    strategyButton.Text='CARD STRATEGY: '..cardStrategyText()..' (tap)'
+    saveSettings();note('BIG REWARDS selected: prioritize AprilCoins while rating curse risk')
+end)
 local function toggle(label,key)
     local b
     b=button('',function()
@@ -2198,19 +2229,6 @@ button('SHOW AUTO REPORT STATUS',function()
     note('Reporter '..(S.options.autoReport and 'ON' or 'OFF')..' | lines='..#reporter.lines..
         ' | local file='..tostring(reporter.filesOK)..' | '..REPORT_FILE)
 end)
-local autoCardButton
-autoCardButton=button('AUTO CHOOSE BEST CARD: '..(S.options.autoCards and 'ON' or 'OFF'),
-    function(b)
-        S.options.autoCards=not S.options.autoCards
-        if S.options.autoCards then S.options.cardAdvisor=true end
-        b.Text='AUTO CHOOSE BEST CARD: '..(S.options.autoCards and 'ON' or 'OFF')
-        b.BackgroundColor3=S.options.autoCards and C.active or C.muted
-        saveSettings()
-        note(S.options.autoCards and
-            'AUTO CARD ON (experimental): card choices only; FULL AUTO remains separate'
-            or 'AUTO CARD OFF: recommendations remain visible')
-    end)
-autoCardButton.BackgroundColor3=S.options.autoCards and C.active or C.muted
 toggle('CAUTIOUS WAVE SKIP','cautiousSkip')
 toggle('SCOUT MAP / ENEMY COUNTERS','stageScout')
 toggle('AUTO EQUIP RECOMMENDED (learn first)','autoEquip')
@@ -2270,23 +2288,6 @@ end)
 button('STOP EQUIP LEARNING',function()
     S.equipLearning=false
     note('Equip learning stopped')
-end)
-local function cardStrategyText()
-    return S.goal=='Rewards' and 'BIG REWARDS (AprilCoins)'
-        or (S.goal=='Safe' and 'SAFE CLEAR' or 'BALANCED')
-end
-local strategyButton
-strategyButton=button('CARD STRATEGY: '..cardStrategyText()..' (tap)',function(b)
-    local goals={'Safe','Balanced','Rewards'}
-    local n=table.find(goals,S.goal) or 2
-    S.goal=goals[n%#goals+1]
-    b.Text='CARD STRATEGY: '..cardStrategyText()..' (tap)'
-    saveSettings();note('Card strategy: '..cardStrategyText())
-end)
-button('SET BIG REWARDS (APRILCOINS)',function()
-    S.goal='Rewards'
-    strategyButton.Text='CARD STRATEGY: '..cardStrategyText()..' (tap)'
-    saveSettings();note('BIG REWARDS selected: prioritize AprilCoins while rating curse risk')
 end)
 button('COPY CARD CHOICES / DEBUG',function()
     local result={'AA SMART CARD SCAN | mode='..S.mode..' map='..S.map..' wave='..wave()..
