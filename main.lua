@@ -2166,11 +2166,18 @@ button('MODE: '..S.mode..' (tap to change)',function(b)
     saveSettings();note('Selected '..S.mode)
 end)
 -- Fool's Hunt card controls appear immediately under MODE for easy mobile access.
+local advisorBtn
 local autoCardButton
 autoCardButton=button('AUTO CHOOSE BEST CARD: '..(S.options.autoCards and 'ON' or 'OFF'),
     function(b)
         S.options.autoCards=not S.options.autoCards
-        if S.options.autoCards then S.options.cardAdvisor=true end
+        if S.options.autoCards then
+            S.options.cardAdvisor=true
+            if advisorBtn then
+                advisorBtn.Text='CARD ADVISOR: ON'
+                advisorBtn.BackgroundColor3=C.active
+            end
+        end
         b.Text='AUTO CHOOSE BEST CARD: '..(S.options.autoCards and 'ON' or 'OFF')
         b.BackgroundColor3=S.options.autoCards and C.active or C.muted
         saveSettings()
@@ -2218,7 +2225,7 @@ toggle('AUTO START WAVES','start')
 toggle('AUTO SKIP WAVES','skip')
 toggle('AUTO REPLAY','replay')
 toggle('PRIORITIZE MONEY UNITS','farming')
-toggle('CARD ADVISOR','cardAdvisor')
+advisorBtn=toggle('CARD ADVISOR','cardAdvisor')
 toggle('AUTO-LOG RUN (no autofarm needed)','autoReport')
 toggle('AUTO-COPY CARDS / BOSSES / END','autoCopyReport')
 button('COPY COMPLETE AUTO REPORT',function()
