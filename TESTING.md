@@ -6,6 +6,19 @@ Restart Roblox after older injections. Execute the unchanged loadstring once in 
 
 Only after a stable observer test, try one re-execution: the old GUI must disappear and one new GUI remain. Closing must stop updates and dragging. If it crashes before the GUI, stop repeated injection; offline syntax tests cannot diagnose that crash.
 
+## Current next test: placement feedback (v6.0.7)
+
+The user observed scripted Bulma upgrades, then a placement timeout in a fresh namek_level_1 run with no own tower. The old report does not reveal the RPC return or saved position. v6.0.7 corrects the suspected model-centre/terrain-surface height input and records those missing boundary observations. The actual cause and successful placement still need live confirmation.
+
+1. In an active **same Story stage** with Bulma absent, run the unchanged loadstring and confirm 6.0.7. Keep Full Auto OFF.
+2. Tap FARM → READ MATCH DATA + COPY COMBAT REPORT to connect the cache. The existing saved target is reused. This report also performs one read-only terrain check.
+3. Start waves and tap TEST ONE PLACEMENT once when the displayed price plus reserve is affordable. No manual placement/upgrading during the following eight seconds.
+4. Paste the automatically copied report. Inspect **SURFACE CHECK**, **SENT POSITION**, **RPC RESPONSE** and **SCOPED GAME MESSAGES** alongside the exact tower readback. If the surface is unsupported the request stops before sending; do not bypass the blocker.
+
+The raycast uses only the saved X/Z and observed _terrain, not an enemy path or guessed map spot. It never skips a blocking first hit or searches under it. A source/type/ancestry/height mismatch is unsupported. Missing definitions or raycast capability also stop. Ground/hill flags follow the loaded definition. The three-stud maximum downward projection is conservative, not a claim about all unit heights; surfaces above the recorded sample or farther below require inspection.
+
+RPC summaries contain at most two returns and whitelisted scalar table fields; unit UUIDs are redacted. Lua callOK means the native call did not throw, not that the game placed a unit. The exact show_message listener is optional, action-scoped, at most eight seconds/four bounded messages and cleaned on replacement/close. A message in the window may have another cause. No response or warning can replace exact own-model/identity/position confirmation.
+
 ## Next test: combat data (v6.0.4)
 
 The user's v6.0.3 report already recognized 77 owned records and six equipped slots. Do not repeat a broad lobby metadata scan.

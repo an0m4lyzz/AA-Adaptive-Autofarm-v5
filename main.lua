@@ -5,7 +5,7 @@ local __modules = {}
 __modules.core = (function()
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.6'
+C.version = '6.0.7'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -667,6 +667,104 @@ return function(C, env, cfg, log)
         if not v or not (v:IsA('NumberValue') or v:IsA('IntValue')) then return nil end
         return C.finite(v.Value) and v.Value or nil
     end
+    local function cleanText(value,uuid)
+        if type(value)~='string' then return '<'..type(value)..'>' end
+        local s=value:gsub('<.->',''):gsub('%c',' ')
+        if type(uuid)=='string' and #uuid>0 then s=s:gsub(uuid:gsub('(%W)','%%%1'),'<unit>') end
+        s=s:gsub(string.rep('%x',8)..'%-'..string.rep('%x',4)..'%-'..string.rep('%x',4)..'%-'..
+            string.rep('%x',4)..'%-'..string.rep('%x',12),'<unit>'):gsub(string.rep('%x',32),'<unit>')
+        return s:sub(1,180)
+    end
+    local function replyText(value,uuid)
+        local ty=type(value)
+        if ty=='nil' then return 'nil' end
+        if ty=='boolean' then return tostring(value) end
+        if ty=='number' then return C.finite(value) and tostring(value) or '<nonfinite number>' end
+        if ty=='string' then return 'string: '..cleanText(value,uuid) end
+        if ty=='table' then
+            local fields={}
+            for _,k in ipairs({'success','ok','error','message','reason','status','code'}) do
+                local v=rawget(value,k);local vt=type(v)
+                if vt=='string' then fields[#fields+1]=k..'='..cleanText(v,uuid)
+                elseif vt=='boolean' or (vt=='number' and C.finite(v)) then fields[#fields+1]=k..'='..tostring(v) end
+            end
+            return 'table: '..(#fields>0 and table.concat(fields,'; ') or 'unclassified contents omitted')
+        end
+        return '<'..ty..'>'
+    end
+    local function disconnectMessages(self)
+        if self.messageConnection then pcall(function() self.messageConnection:Disconnect() end) end
+        if self.messageMark then self.messageMark.watchState='closed' end
+        self.messageConnection=nil;self.messageMark=nil
+    end
+    local function watchMessages(self,mark)
+        disconnectMessages(self)
+        mark.messages={};mark.watchState='unavailable'
+        local event=child(child(child(RS,'endpoints'),'server_to_client'),'show_message')
+        if not event or not event:IsA('RemoteEvent') then return end
+        local ok,connection=pcall(function()
+            return event.OnClientEvent:Connect(function(message)
+                if self.alive and self.messageMark==mark and self.run==mark.run
+                    and os.clock()-mark.at<=8 and #mark.messages<4 and type(message)=='string' then
+                    local text=cleanText(message,mark.redactUuid)
+                    mark.messages[#mark.messages+1]=text;log:add('GAME MESSAGE',mark.kind..' | '..text)
+                end
+            end)
+        end)
+        if ok and connection then
+            self.messageConnection=connection;self.messageMark=mark;mark.watchState='open'
+        end
+    end
+    function A:placementSurface(pos,id)
+        local check={run=self.run,reason='Not checked'};self.lastSurfaceCheck=check
+        local function fail(reason) check.reason=reason;return nil,reason end
+        if C.distance(pos,pos)~=0 then return fail('Recorded position invalid') end
+        check.recorded={pos[1],pos[2],pos[3]}
+        local terrain=child(WS,'_terrain')
+        if not terrain then return fail('Observed _terrain container missing') end
+        local ground,hill=child(terrain,'ground'),child(terrain,'hill')
+        if not ground and not hill then return fail('Observed terrain has no supported ground/hill root') end
+        local def=type(self.definitions)=='table' and type(id)=='string' and rawget(self.definitions,id) or nil
+        if type(def)~='table' then return fail('Loaded unit placement definition unavailable') end
+        local hillUnit,hybrid=rawget(def,'hill_unit'),rawget(def,'hybrid_placement')
+        if (hillUnit~=nil and type(hillUnit)~='boolean') or (hybrid~=nil and type(hybrid)~='boolean') then
+            return fail('Unsupported unit placement flags')
+        end
+        if not Vector3 or not RaycastParams or not Enum or not Enum.RaycastFilterType then
+            return fail('Terrain raycast capability unavailable')
+        end
+        local ok,hit=pcall(function()
+            local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Include
+            params.FilterDescendantsInstances={terrain}
+            return WS:Raycast(Vector3.new(pos[1],pos[2]+80,pos[3]),Vector3.new(0,-400,0),params)
+        end)
+        if not ok then return fail('Terrain raycast failed') end
+        if not hit or not hit.Instance then return fail('No observed terrain surface at the recorded X/Z') end
+        local at=hit.Instance;local reachedTerrain=false
+        for _=1,12 do
+            if not at then break end
+            if at.Name=='_donotplace' then return fail('Hit a _donotplace surface') end
+            if at==terrain then reachedTerrain=true;break end
+            at=at.Parent
+        end
+        if not reachedTerrain then return fail('Terrain ancestry incomplete; surface unsupported') end
+        local function within(root) return root and (hit.Instance==root or hit.Instance:IsDescendantOf(root)) end
+        local class=within(ground) and 'ground' or within(hill) and 'hill' or nil
+        if not class then return fail('First terrain hit is not a supported ground/hill surface') end
+        if (class=='hill' and not hillUnit and not hybrid) or (class=='ground' and hillUnit) then
+            return fail('Observed surface does not match the unit ground/hill rule')
+        end
+        local p=hit.Position;local normal=hit.Normal
+        if not p or not C.finite(p.X) or not C.finite(p.Y) or not C.finite(p.Z)
+            or not normal or not C.finite(normal.Y) or normal.Y<=0 then return fail('Terrain hit has invalid position/normal') end
+        if math.abs(p.X-pos[1])>0.05 or math.abs(p.Z-pos[3])>0.05 then return fail('Raycast changed recorded X/Z') end
+        -- A body-centre sample must not select an upper deck or a distant lower
+        -- floor. Three studs is a conservative supported projection window,
+        -- not an assumed unit offset or a fallback placement height.
+        if p.Y>pos[2]+0.05 or pos[2]-p.Y>3 then return fail('Surface height conflicts with the saved sample') end
+        check.pos={p.X,p.Y,p.Z};check.source='_terrain.'..class;check.normalY=normal.Y;check.reason='Observed surface'
+        return table.clone(check.pos),check.source
+    end
     local function point(m)
         local p=child(m,'_hitbox') or m.PrimaryPart
         if p and p:IsA('BasePart') then return {p.Position.X,p.Position.Y,p.Position.Z} end
@@ -1066,7 +1164,7 @@ return function(C, env, cfg, log)
         elseif rawget(data,'_event_contract') then self.mode='Event' end
         return true
     end
-    function A:issue(kind,args)
+    function A:issue(kind,args,geometry)
         if not self.alive or self:busy() then return false,'Transport busy/closed' end
         local remote
         if kind=='map' then remote=child(child(WS,'_MAP_CONFIG'),'GetLevelData')
@@ -1075,9 +1173,17 @@ return function(C, env, cfg, log)
             return false,'Required observed endpoint unavailable'
         end
         local mark={kind=kind,at=os.clock(),run=self.run}
+        if kind~='map' then
+            mark.endpoint=remote.Name;mark.reply='pending'
+            mark.redactUuid=geometry and geometry.uuid or (type(args[1])=='string' and args[1] or nil)
+            if geometry and geometry.recorded and geometry.pos then
+                mark.geometry={recorded=table.clone(geometry.recorded),pos=table.clone(geometry.pos),source=geometry.source}
+            end
+            self.lastMutation=mark;watchMessages(self,mark)
+        end
         env.K_AA_NETWORK_PENDING=mark
         local thread=task.spawn(function()
-            local ok,res=pcall(function()
+            local ok,res,extra=pcall(function()
                 if remote:IsA('RemoteFunction') then return remote:InvokeServer(table.unpack(args)) end
                 remote:FireServer(table.unpack(args));return nil
             end)
@@ -1092,14 +1198,23 @@ return function(C, env, cfg, log)
                         log:add('STAGE',self.stage..' | '..self.stageName)
                     else self.mapStatus='Stage response had no supported ID' end
                 else self.mapStatus='Stage read failed/expired';log:add('MAP READ','No current stage evidence') end
-            elseif not ok or res==false then
-                self.failures[#self.failures+1]='Remote '..kind..' rejected/error'
+            else
+                mark.elapsed=os.clock()-mark.at;mark.late=mark.expired or mark.elapsed>8
+                mark.reply=(remote:IsA('RemoteEvent') and 'event sent; no reply' or replyText(res,mark.redactUuid))..
+                    ' | extra='..replyText(extra,mark.redactUuid)
+                mark.callOK=ok
+                log:add('REMOTE REPLY',kind..' | run='..mark.run..' | '..(ok and '' or 'error | ')..mark.reply)
+                local structuredFailure=type(res)=='table' and (rawget(res,'success')==false or rawget(res,'ok')==false)
+                if self.run==mark.run and not mark.late and (not ok or res==false or structuredFailure) then
+                    self.failures[#self.failures+1]='Remote '..kind..' rejected/error | '..mark.reply:sub(1,220)
+                end
             end
         end)
         mark.thread=thread
         return true
     end
     function A:poll()
+        if self.messageMark and (self.run~=self.messageMark.run or os.clock()-self.messageMark.at>8) then disconnectMessages(self) end
         local cache=env.K_AA_CLIENT_CACHE_PENDING
         if cache and not cache.expired and os.clock()-cache.at>8 then
             cache.expired=true;self.cacheDone=true
@@ -1266,9 +1381,13 @@ return function(C, env, cfg, log)
     end
     function A:dispatch(action)
         if action.kind=='place' then
-            return self:issue('place',{action.uuid,CFrame.new(table.unpack(action.pos))})
+            local pos,why=self:placementSurface(action.pos,action.id)
+            if not pos then return false,'Placement blocked: '..tostring(why) end
+            return self:issue('place',{action.uuid,CFrame.new(table.unpack(pos))},
+                {recorded=action.pos,pos=pos,source=why,uuid=action.uuid})
         elseif action.kind=='upgrade' and self.models[action.key] then
-            return self:issue('upgrade',{self.models[action.key]})
+            local model=self.models[action.key];local u=record(model,'battle')
+            return self:issue('upgrade',{model},{uuid=action.uuid or (u and u.uuid)})
         elseif action.kind=='replay' then return self:issue('replay',{'replay'}) end
         return false,'Unsupported action'
     end
@@ -1301,7 +1420,37 @@ return function(C, env, cfg, log)
         for _,kind in ipairs({'spawn_unit','upgrade_unit_ingame'}) do
             rows[#rows+1]='Endpoint '..kind..' present='..tostring(self:remote(kind)~=nil)
         end
-        return table.concat(rows,'\n')
+        return table.concat(rows,'\n')..'\n'..self:actionReport()
+    end
+    function A:inspectPlacement(p,s)
+        if not self.alive or not s.inMatch or not s.stageVerified or not C.contextMatches(p,s)
+            or type(p.entries)~='table' or #p.entries~=1 then return end
+        local e=p.entries[1]
+        if type(e)=='table' then self:placementSurface(e.pos,e.id) end
+    end
+    function A:actionReport()
+        local function pointText(p)
+            return C.distance(p,p)==0 and string.format('(%.3f, %.3f, %.3f)',p[1],p[2],p[3]) or '?'
+        end
+        local rows={}
+        local surface=self.lastSurfaceCheck
+        if surface then
+            rows[#rows+1]='SURFACE CHECK | run='..surface.run..' | '..surface.reason..
+                ' | recorded='..pointText(surface.recorded)..' | surface='..pointText(surface.pos)..
+                ' | source='..tostring(surface.source or '?')..' | normalY='..tostring(surface.normalY or '?')
+        end
+        local m=self.lastMutation
+        if not m then rows[#rows+1]='LAST MUTATION REQUEST: none'
+        else
+            rows[#rows+1]='LAST MUTATION REQUEST | '..m.kind..' | run='..m.run..' | endpoint='..m.endpoint..
+                ' | elapsed='..tostring(m.elapsed or '?')..' | late='..tostring(m.late or false)
+            if m.geometry then rows[#rows+1]='SENT POSITION | recorded='..pointText(m.geometry.recorded)..
+                ' | sent='..pointText(m.geometry.pos)..' | source='..m.geometry.source end
+            rows[#rows+1]='RPC RESPONSE | '..m.reply..' | callOK='..tostring(m.callOK)
+            rows[#rows+1]='SCOPED GAME MESSAGES | observer='..tostring(m.watchState)..' | count='..#m.messages
+            for _,v in ipairs(m.messages) do rows[#rows+1]='GAME MESSAGE | '..v end
+        end
+        return table.concat(rows,'\n'):sub(1,3000)
     end
     function A:record(s,costText)
         if not s.inMatch or not s.stageVerified then return nil,'Stage identity unavailable' end
@@ -1344,6 +1493,7 @@ return function(C, env, cfg, log)
         return p,why
     end
     function A:close()
+        disconnectMessages(self)
         self.alive=false;self.clientService=nil;self.clientBinding=nil;self.loaderExport=nil;self.definitions=nil
     end
     return A
@@ -1832,6 +1982,7 @@ function app:copyReport()
 end
 function app:copyCombatReport()
     self.snapshot=self.adapter:observe(os.clock())
+    self.adapter:inspectPlacement(self.trialProfile,self.snapshot)
     local blockers=C.readiness(self.snapshot,self.profile,cfg)
     local text='[K] AA RUKIA '..C.version..' | LIVE COMBAT UNVERIFIED\n'..
         self.adapter:combatReport(self.snapshot)..'\n'..

@@ -11,6 +11,11 @@ local function node(name,class,attrs,kids)
     function x:GetAttributes() return self.attrs end
     function x:FindFirstChild(k) for _,v in ipairs(self.kids) do if v.Name==k then return v end end end
     function x:GetChildren() return self.kids end
+    function x:IsDescendantOf(parent)
+        local at=self.Parent
+        for _=1,16 do if at==parent then return true end;if not at then break end;at=at.Parent end
+        return false
+    end
     function x:IsA(k) return self.ClassName==k or k=='ValueBase' and self.ClassName:find('Value')~=nil end
     for _,v in ipairs(x.kids) do v.Parent=x end
     return x
@@ -448,7 +453,9 @@ check('late map response is rejected even when the polling timer has not run',fu
     assert(not a.stage and env.K_AA_NETWORK_PENDING==nil)
 end)
 local function trialWorld()
-    local a,env,cfg,ws,rs,_,player,tasks=world({CFrame={new=function(x,y,z) return {x,y,z} end}})
+    local a,env,cfg,ws,rs,_,player,tasks=world({CFrame={new=function(x,y,z) return {x,y,z} end},
+        Vector3={new=function(x,y,z) return {X=x,Y=y,Z=z} end},RaycastParams={new=function() return {} end},
+        Enum={RaycastFilterType={Include='Include'}}})
     player.attrs={}
     local money=node('resource','NumberValue');money.Value=2000
     player.kids[#player.kids+1]=node('_stats','Folder',{}, {money})
@@ -460,7 +467,11 @@ local function trialWorld()
             {uuid='a',id='bulma',player_id=12,upgrade=0,next_upgrade_cost=1500})})
     end
     local old=tower();local folder=node('_UNITS','Folder',{}, {old})
-    local wave=node('_wave_num','IntValue');wave.Value=1;ws.kids={folder,wave}
+    local part=node('surface','BasePart')
+    local terrain=node('_terrain','Folder',{}, {node('ground','Folder',{}, {part})})
+    local wave=node('_wave_num','IntValue');wave.Value=1;ws.kids={folder,wave,terrain}
+    function ws:Raycast() return {Position={X=1,Y=0,Z=3},Normal={Y=1},Instance=part} end
+    a.definitions={bulma={cost=800}}
     a:observe(10);a.stage='namek_level_1';a.mode='Story'
     local s=a:observe(11);local p=a:record(s,'');assert(p)
     local t=makeTrial(C,cfg,C.logger())
@@ -478,12 +489,12 @@ check('one upgrade trial dispatches the observed model once and confirms adapter
     assert(coroutine.resume(tasks[1]));t:tick(a:observe(12));t:tick(a:observe(13))
     assert(t.upgrades==1 and calls==1 and not t.pending and env.K_AA_NETWORK_PENDING==nil)
 end)
-check('one placement trial dispatches exact UUID and recorded coordinates once',function()
+check('one placement trial dispatches exact UUID and observed surface coordinates once',function()
     local a,env,rs,t,_,p,_,money,folder,tower,tasks=trialWorld();local calls=0
     folder.kids={};local s=a:observe(12)
     local remote=node('spawn_unit','RemoteFunction')
     function remote:InvokeServer(uuid,position)
-        assert(uuid=='a' and position[1]==1 and position[2]==2 and position[3]==3)
+        assert(uuid=='a' and position[1]==1 and position[2]==0 and position[3]==3)
         calls+=1;folder.kids={tower()};money.Value=1200;return true
     end
     rs.kids={node('endpoints','Folder',{}, {node('client_to_server','Folder',{}, {remote})})}

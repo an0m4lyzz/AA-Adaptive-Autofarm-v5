@@ -42,13 +42,14 @@ Restart Roblox after older hooked builds. These protections do not prove Android
 
 ## First test
 
-The user's v6.0.4 report demonstrates combat data reads, and the v6.0.5 report observes one scripted Bulma upgrade **1→2**. Placement remains untested. Bulma is unsellable in the reported build, so use a saved position in a fresh matching stage.
+Combat data reads and scripted Bulma upgrades are observed. The v6.0.6 placement attempt timed out with no own tower. v6.0.7 addresses a suspected height-source mismatch and adds request/terrain diagnostics; live placement remains unverified.
 
-1. With Bulma placed, leave **TEST TARGET: EQUIPPED SLOT 4** and tap **RECORD ONE TEST TARGET**.
-2. Tap **SETTINGS → SAVE SETTINGS / RECORDED PROFILE** and wait for **Settings saved** before leaving.
-3. Enter a fresh copy of the same Story stage and execute the unchanged loadstring. Confirm v6.0.6; keep Full Auto OFF.
-4. Read match data, start waves and keep the saved Bulma spot empty.
-5. When affordable, tap **TEST ONE PLACEMENT** at the displayed quote (previously 800 Yen), wait up to eight seconds and paste the automatically copied report.
+1. In an active copy of the same Story stage with Bulma absent, run the unchanged loadstring. Confirm **6.0.7**; keep Full Auto OFF.
+2. Tap **READ MATCH DATA + COPY COMBAT REPORT** to connect this injection. The existing saved test profile is retained; its saved X/Z now gets a bounded terrain check.
+3. Start waves and, when affordable, tap **TEST ONE PLACEMENT** once (previous quote 800 Yen).
+4. Leave placement/upgrade controls alone for eight seconds, then paste the automatically copied report. It now includes SURFACE CHECK, SENT POSITION, RPC RESPONSE and scoped game messages.
+
+If no test profile was saved, record one target and save settings first, then use a fresh copy of the same stage as described in TESTING.md.
 
 See [TESTING.md](TESTING.md) for details. These controls do not require claiming Story is a Rukia farming route. Dungeon keys/chests remain manual and unverified.
 
@@ -97,6 +98,14 @@ New-model readback requires exactly one new matching model at the recorded posit
 The user's v6.0.5 report observes the scripted Bulma upgrade **1→2**. The user also reports that Bulma cannot be sold, invalidating the previous placement-test instructions. The test already supports a saved target profile in a fresh matching stage: record Bulma, save settings, enter the same stage fresh, load the script, read match data, start waves and test one placement into the saved empty position. See [the exact steps](TESTING.md#placement-with-an-unsellable-unit-v606).
 
 Updated help/blocker text and documented the existing save/restore path. No mutation behavior or new selling endpoint is added. A regression exercises the restored profile in a fresh matching run and rejects a different stage. Placement and complete farming still require live verification.
+
+### v6.0.7: terrain projection and request feedback
+
+The failed live placement had correct exposed inventory/cash and no observed own tower. Its report omitted the actual RPC return, game warning and saved/sent coordinates, so it cannot establish a server rejection reason. Code comparison found that the recorder stores the hitbox centre while the referenced placement implementation sends the observed terrain surface. This is a supported hypothesis for the timeout, not a live-verified cause.
+
+Before each placement, one vertical Include-only raycast resolves the saved X/Z against observed _terrain. The first hit must belong to ground/hill and agree with the loaded unit flags. Missing/blocked/truncated ancestry and conflicting height stop the request. A conservative three-stud downward projection window prevents selecting distant floors; it is a support limit, never a placement offset. No hardcoded surface height, coordinate search or retry is used. Existing model-centre coordinates remain the readback target.
+
+Reports retain sanitized first/second RPC returns, recorded/sent/surface coordinates and up to four show_message events during an eight-second mutation window. The optional exact event listener is created only for an action and disconnected on expiry, replacement or close. Messages are time-correlated observations, not proof that every warning belongs to the request. A true/nil return alone never confirms a placement. No hook, startup listener, premium endpoint or broad GUI traversal is added.
 
 ## Development
 

@@ -276,6 +276,7 @@ function app:copyReport()
 end
 function app:copyCombatReport()
     self.snapshot=self.adapter:observe(os.clock())
+    self.adapter:inspectPlacement(self.trialProfile,self.snapshot)
     local blockers=C.readiness(self.snapshot,self.profile,cfg)
     local text='[K] AA RUKIA '..C.version..' | LIVE COMBAT UNVERIFIED\n'..
         self.adapter:combatReport(self.snapshot)..'\n'..
