@@ -692,6 +692,21 @@ return function(C, env, cfg, log)
         if #p.entries==0 then return nil,'Place your team manually first' end
         return p
     end
+    function A:recordTestTarget(s,slot)
+        if not C.finite(slot) or slot%1~=0 or slot<1 or slot>8 then return nil,'Invalid equipped test slot' end
+        local target
+        for _,u in ipairs(s.roster or {}) do if u.slot==slot then target=u;break end end
+        if not target then return nil,'Selected test slot has no exposed equipped record' end
+        local matches={}
+        for _,u in ipairs(s.units or {}) do
+            if u.uuid==target.uuid and u.id==target.id then matches[#matches+1]=u end
+        end
+        if #matches~=1 then return nil,'Place exactly one copy from test slot '..slot..'; current copies='..#matches end
+        local selected=table.clone(s);selected.units=matches
+        local p,why=self:record(selected,cfg.recordCosts)
+        if p then p.testSlot=slot end
+        return p,why
+    end
     function A:close()
         self.alive=false;self.clientService=nil;self.clientBinding=nil;self.loaderExport=nil;self.definitions=nil
     end

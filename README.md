@@ -21,6 +21,7 @@ main.lua bundles local src modules; there is no secondary HTTP loader or externa
 | Progression checklist | Implemented, historical data | Acquisition → trait → stats → evolution. No fabricated pity or live price. |
 | Seven-tab dark touch GUI | Implemented; live untested | RUKIA, TRAITS, STATS, EVOLUTION, FARM, REPORTS, SETTINGS. |
 | Recorded placements/upgrades | Experimental | Exact equipped identity, stage, costs, position and new-model/upgrade feedback required. |
+| One-action Story tests | Implemented; live request untested | Explicit click, visible unit/slot/price, one request and bounded readback. No Rukia route claim. |
 | Path observation | Experimental observer | Bounded visible movement samples. Active placement uses recorded coordinates. |
 | Results and reports | Offline-tested logic | Exact visible labels, ambiguity remains unknown. Resource deltas are observations, not attributed drops. |
 | Replay | Experimental, restricted | Observed Story/Infinite/Challenge only; stage-specific no-cost confirmation, opt-in and run cap. |
@@ -41,12 +42,15 @@ Restart Roblox after older hooked builds. These protections do not prove Android
 
 ## First test
 
-The v6.0.3 user report now shows 77 collection records, all six equipped slots and material counts through the client cache. Another lobby folder scan is unnecessary. The next boundary to test is combat.
+The user's v6.0.4 match report confirms stage, Story mode, cash, all six base/effective costs, Bulma's exact equipped match/position and next-upgrade quote. The next boundary is one actual request.
 
-1. Join a **free Story stage** manually, then execute the unchanged loadstring in that match. Confirm v6.0.4; leave Full Auto OFF.
-2. Start waves and manually place one affordable equipped unit. Open Collection once if needed.
-3. Tap **FARM → READ MATCH DATA + COPY COMBAT REPORT** and paste the copied report.
-4. Compare cash and prices with the actual HUD. Follow [TESTING.md](TESTING.md) before arming recorded combat. Dungeon keys/chests remain manual and unverified.
+1. Execute the unchanged loadstring inside an active **free Story stage**. Confirm v6.0.5; leave Full Auto OFF.
+2. Use **FARM → READ MATCH DATA + COPY COMBAT REPORT** once. Place Bulma and any defenders manually as needed.
+3. Leave **TEST TARGET: EQUIPPED SLOT 4** for this reported team, then tap **RECORD ONE TEST TARGET**.
+4. When you can afford the displayed price plus reserve, tap **TEST ONE UPGRADE** once. The reported Bulma 0→1 price was 1,500 Yen; inspect the current button.
+5. Leave placement/upgrade controls alone for up to eight seconds, then paste the automatically copied combat report.
+
+See [TESTING.md](TESTING.md) for the later one-placement test. These controls do not require claiming Story is a Rukia farming route. Dungeon keys/chests remain manual and unverified.
 
 ### v6.0.1: missing data-path diagnostic
 
@@ -79,6 +83,14 @@ The previous adapter could read inventory but omitted three combat sources used 
 Definition placement and upgrade prices require an **explicit positive observed player_cost_scale**. Missing modifiers do not silently mean 1; user-recorded fallback prices remain available. Recorded modifier/price changes block automation. Temporary missing level data cannot revive a previous run's stage. Missing map endpoints are checked for up to 30 seconds; completed invalid replies permit at most three actual requests, with the global pending/timeout lock preserved.
 
 The focused combat report includes exact equipped matches (UUIDs omitted), position availability, upgrade levels, current prices, data sources, endpoint presence and readiness blockers. These are implemented adapter fixes with offline regressions; actual placement/upgrade acceptance and Android performance still require the supervised match test.
+
+### v6.0.5: one supervised action
+
+The v6.0.4 live report confirms the missing reads now execute in namek_level_1: Story observed, resource cash 400, cost scale 1, six equipped prices, Bulma position/identity and next quote 1,500. The remaining Full Auto gates are intentional, and this Story test has no confirmed Rukia reward route. A separate single-action controller allows protocol testing without changing those confirmations.
+
+Select an equipped slot and record its single placed copy into a separate test profile. Other defenders may remain placed. Buttons display unit ID, actual slot, upgrade level and match-Yen price; expired or changed quotes cannot spend. Each kind permits one explicit request per observed run in the current controller, followed by an eight-second readback. The observer never emits another action. There is no automatic upgrade chain, replay, selling, route/protocol promotion or premium endpoint.
+
+New-model readback requires exactly one new matching model at the recorded position. Upgrade readback requires the same model with exactly one added level. Ambiguous, late, changed-context and rejected results stay unconfirmed and block further tests/farming for that observed run. Reports copy automatically on completion. Native requests cannot be undone by STOP. Reloading resets in-memory test history; the global pending native-request lock still applies. Live request acceptance and complete Rukia progression remain unverified.
 
 ## Development
 

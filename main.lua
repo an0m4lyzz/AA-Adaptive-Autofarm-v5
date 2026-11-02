@@ -5,7 +5,7 @@ local __modules = {}
 __modules.core = (function()
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.4'
+C.version = '6.0.5'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -14,7 +14,7 @@ C.itemLabels = {SacredTreasure='Sacred Treasure',StarFruit='Star Fruit',StarFrui
 C.defaults = {goal='Acquire',targetTrait='Unique',targetGrade='SSS',reserve=0,maxRuns=1,
     maxSeconds=1200,upgrade=true,replay=false,replayFreeConfirmed=false,protocolConfirmed=false,
     routeConfirmed=false,traitCap=0,statCap=0,inventoryPath='',resourcePath='',cashPath='',
-    mode='Dungeon',logDisk=false,selectedUuid='',recordCosts=''}
+    mode='Dungeon',logDisk=false,selectedUuid='',recordCosts='',trialSlot=4}
 function C.finite(x) return type(x)=='number' and x==x and math.abs(x)<1e12 end
 function C.deficit(have,need)
     if not C.finite(have) then return nil end
@@ -78,6 +78,8 @@ function C.sanitize(raw)
         cfg[k]=math.clamp(math.floor(cfg[k]),0,limit)
     end
     cfg.maxRuns=math.max(1,cfg.maxRuns);cfg.maxSeconds=math.max(30,cfg.maxSeconds)
+    if not C.finite(cfg.trialSlot) then cfg.trialSlot=C.defaults.trialSlot end
+    cfg.trialSlot=math.clamp(math.floor(cfg.trialSlot),1,8)
     if not table.find({'Acquire','Trait','Stats','Evolution','Build'},cfg.goal) then cfg.goal='Acquire' end
     if not grades[cfg.targetGrade] then cfg.targetGrade='SSS' end
     if not table.find({'Unique','Divine','Celestial','Reaper','Godspeed','Sniper'},cfg.targetTrait) then cfg.targetTrait='Unique' end
@@ -103,11 +105,15 @@ function C.distance(a,b)
     return math.sqrt((a[1]-b[1])^2+(a[2]-b[2])^2+(a[3]-b[3])^2)
 end
 function C.placementVerified(p,units)
+    local found
     for _,u in ipairs(units or {}) do
         if u.key and not p.before[u.key] and u.uuid==p.uuid and u.id==p.id
-            and C.distance(u.pos,p.pos)<=3 then return u end
+            and C.distance(u.pos,p.pos)<=3 then
+            if found and found.key~=u.key then return nil,true end
+            found=u
+        end
     end
-    return nil
+    return found,false
 end
 function C.readiness(s,p,cfg)
     local blockers={}
@@ -269,14 +275,15 @@ function C.engine(cfg,log)
         end
         if self.pending then
             local q=self.pending
-            local confirmed
-            if q.kind=='place' then confirmed=C.placementVerified(q,s.units)
+            local confirmed,ambiguous
+            if q.kind=='place' then confirmed,ambiguous=C.placementVerified(q,s.units)
             elseif q.kind=='upgrade' then
                 for _,u in ipairs(s.units) do
                     if u.key==q.key and u.uuid==q.uuid and u.id==q.id
                         and C.finite(u.level) and u.level>q.level then confirmed=u;break end
                 end
             end
+            if ambiguous then self:stop('Ambiguous placement feedback; no action confirmed');return nil end
             if confirmed then
                 self.log:add('CONFIRMED',q.kind..' '..q.id)
                 if q.kind=='place' then self.index+=1;self.placements+=1 else self.upgrades+=1 end
@@ -479,6 +486,149 @@ return function(C)
         return nil
     end
     return I
+end
+
+end)()
+
+__modules.trial = (function()
+-- Explicit single-action Story tests. No route claim, replay or emitted tick actions.
+return function(C,cfg,log)
+    local T={state='IDLE',reason='No supervised action attempted',pending=nil,placements=0,upgrades=0,
+        attemptRun=nil,attempted={}}
+    function T:quote(kind,s,p)
+        if kind~='place' and kind~='upgrade' then return nil,'Unsupported test action' end
+        if self.pending or s.transportBlocked then return nil,'A request/test is still pending' end
+        if self.state=='UNCONFIRMED' and self.attemptRun==s.run then
+            return nil,'Previous test unconfirmed; inspect the report and enter a fresh match'
+        end
+        if self.attemptRun==s.run and self.attempted[kind] then
+            return nil,'One '..kind..' test already attempted this run; inspect the report'
+        end
+        if not s.inMatch or not s.stageVerified or not s.modeVerified or s.mode~='Story' then
+            return nil,'An observed free Story match is required'
+        end
+        if not s.started or s.resultVisible then return nil,'Start waves in an unfinished match first' end
+        if s.unitsComplete~=true then return nil,'Tower observation incomplete' end
+        if not C.finite(s.now) or not C.finite(s.rosterAt) or s.now-s.rosterAt<0 or s.now-s.rosterAt>15 then
+            return nil,'Fresh equipped records unavailable'
+        end
+        if type(p)~='table' or type(p.entries)~='table' or #p.entries~=1 or p.source~='user-recorded' then
+            return nil,'Record exactly one own tower first'
+        end
+        if not C.contextMatches(p,s) then return nil,'Recorded stage/mode/place differs' end
+        if p.costScale~=nil and (not C.finite(s.costScale) or p.costScale~=s.costScale) then
+            return nil,'Cost modifier changed or became unknown; record again'
+        end
+        local e=p.entries[1]
+        if type(e)~='table' or type(e.uuid)~='string' or e.uuid=='' or type(e.id)~='string' or e.id==''
+            or C.distance(e.pos,e.pos)~=0 or not C.finite(e.cost) or e.cost<=0 then
+            return nil,'Recorded position or deployment price invalid'
+        end
+        local equipped
+        for _,u in ipairs(s.roster or {}) do if u.uuid==e.uuid and u.id==e.id then equipped=u;break end end
+        if not equipped then return nil,'Recorded unit is no longer equipped' end
+        if p.testSlot~=nil and (p.testSlot~=cfg.trialSlot or equipped.slot~=p.testSlot) then
+            return nil,'Selected test slot changed; record its current tower again'
+        end
+        if C.finite(equipped.cost) and equipped.cost~=e.cost then return nil,'Deployment price changed; record again' end
+        local q={kind=kind,uuid=e.uuid,id=e.id,pos={e.pos[1],e.pos[2],e.pos[3]},cost=e.cost,
+            slot=equipped.slot,run=s.run,stage=s.stage,mode=s.mode,placeId=s.placeId,at=s.now}
+        if kind=='place' then
+            for _,u in ipairs(s.units or {}) do
+                if u.uuid==e.uuid and u.id==e.id then
+                    return nil,'Recorded unit already placed; sell it manually before a placement test'
+                end
+                if C.distance(u.pos,e.pos)<=3 then return nil,'Another tower occupies the recorded position' end
+            end
+        else
+            local found
+            for _,u in ipairs(s.units or {}) do
+                if u.uuid==e.uuid and u.id==e.id and C.distance(u.pos,e.pos)<=3 then
+                    if found then return nil,'Recorded upgrade target is ambiguous' end
+                    found=u
+                end
+            end
+            if not found or not found.key then return nil,'Recorded tower is not present' end
+            if not C.finite(found.level) or found.level<0 or found.level%1~=0
+                or not C.finite(found.nextCost) or found.nextCost<=0 then
+                return nil,'Current upgrade level or next price unknown'
+            end
+            q.key=found.key;q.level=found.level;q.cost=found.nextCost
+        end
+        local reserve=C.finite(cfg.reserve) and math.max(0,cfg.reserve) or 0
+        if not C.finite(s.cash) or s.cash-reserve<q.cost then
+            return nil,'Need '..q.cost..' match Yen + '..reserve..' reserve; have '..tostring(s.cash or '?')
+        end
+        return q
+    end
+    function T:begin(kind,s,p,displayed)
+        local q,why=self:quote(kind,s,p)
+        if not q then return nil,why end
+        if type(displayed)~='table' or not C.finite(displayed.at) or s.now-displayed.at<0 or s.now-displayed.at>5
+            or displayed.kind~=q.kind or displayed.uuid~=q.uuid or displayed.id~=q.id or displayed.cost~=q.cost
+            or displayed.run~=q.run or not C.contextMatches(displayed,s) or displayed.key~=q.key
+            or displayed.slot~=q.slot or displayed.level~=q.level or C.distance(displayed.pos,q.pos)>0.01 then
+            return nil,'Displayed price/target changed or expired; review the refreshed button'
+        end
+        if self.attemptRun~=s.run then self.attemptRun=s.run;self.attempted={} end
+        self.attempted[kind]=true
+        q.before={};for _,u in ipairs(s.units or {}) do if u.key then q.before[u.key]=true end end
+        q.cashBefore=s.cash
+        self.pending=q;self.state='WAITING';self.reason='One '..kind..' request; awaiting exact tower readback'
+        self.last={kind=kind,id=q.id,cost=q.cost,cashBefore=s.cash}
+        log:add('TRIAL ATTEMPT',kind..' '..q.id..' | quoted match Yen='..q.cost..'; no automatic retry')
+        return {kind=kind,uuid=q.uuid,id=q.id,pos=table.clone(q.pos),key=q.key}
+    end
+    local function finish(self,state,reason,s)
+        self.pending=nil;self.state=state;self.reason=reason
+        if self.last and s then self.last.cashAfter=s.cash end
+        log:add('TRIAL '..state,reason)
+    end
+    function T:cancel(reason)
+        if self.pending then finish(self,'UNCONFIRMED',reason or 'Test cancelled; result unconfirmed') end
+    end
+    function T:tick(s)
+        local q=self.pending;if not q then return nil end
+        if not C.finite(s.now) or s.now-q.at>8 or s.now<q.at then
+            finish(self,'UNCONFIRMED','Feedback deadline exceeded; no automatic retry',s);return nil
+        end
+        if s.run~=q.run or not s.inMatch or not s.stageVerified or not s.modeVerified or s.mode~='Story'
+            or not C.contextMatches(q,s)
+            or s.unitsComplete~=true or s.resultVisible then
+            finish(self,'UNCONFIRMED','Match/observation changed before confirmation',s);return nil
+        end
+        if q.kind=='place' then
+            local match,ambiguous=C.placementVerified(q,s.units)
+            if ambiguous then finish(self,'UNCONFIRMED','Multiple matching new towers; placement is ambiguous',s)
+            elseif match then
+                self.placements+=1
+                finish(self,'OBSERVED','New exact '..q.id..' tower observed at the recorded position after request',s)
+            end
+        else
+            for _,u in ipairs(s.units or {}) do
+                if u.key==q.key and u.uuid==q.uuid and u.id==q.id and C.distance(u.pos,q.pos)<=3
+                    and C.finite(u.level) and u.level>q.level then
+                    if u.level==q.level+1 then
+                        self.upgrades+=1
+                        finish(self,'OBSERVED','Exact '..q.id..' tower upgrade '..q.level..' → '..u.level..' observed',s)
+                    else finish(self,'UNCONFIRMED','Unexpected upgrade jump; result unconfirmed',s) end
+                    break
+                end
+            end
+        end
+        return nil -- this observer never starts a second action
+    end
+    function T:text()
+        local out='Single-action test: '..self.state..' | '..self.reason..
+            '\nObserved trial placements='..self.placements..' | upgrades='..self.upgrades
+        if self.last then
+            out=out..'\nLast test='..self.last.kind..' '..self.last.id..' | quoted match Yen='..self.last.cost..
+                ' | cash before='..tostring(self.last.cashBefore)..' after='..tostring(self.last.cashAfter or '?')..
+                ' (balance changes are not attributed costs)'
+        end
+        return out
+    end
+    return T
 end
 
 end)()
@@ -1178,6 +1328,21 @@ return function(C, env, cfg, log)
         if #p.entries==0 then return nil,'Place your team manually first' end
         return p
     end
+    function A:recordTestTarget(s,slot)
+        if not C.finite(slot) or slot%1~=0 or slot<1 or slot>8 then return nil,'Invalid equipped test slot' end
+        local target
+        for _,u in ipairs(s.roster or {}) do if u.slot==slot then target=u;break end end
+        if not target then return nil,'Selected test slot has no exposed equipped record' end
+        local matches={}
+        for _,u in ipairs(s.units or {}) do
+            if u.uuid==target.uuid and u.id==target.id then matches[#matches+1]=u end
+        end
+        if #matches~=1 then return nil,'Place exactly one copy from test slot '..slot..'; current copies='..#matches end
+        local selected=table.clone(s);selected.units=matches
+        local p,why=self:record(selected,cfg.recordCosts)
+        if p then p.testSlot=slot end
+        return p,why
+    end
     function A:close()
         self.alive=false;self.clientService=nil;self.clientBinding=nil;self.loaderExport=nil;self.definitions=nil
     end
@@ -1318,6 +1483,15 @@ return function(app)
     button('FARM',function() return app.engine.armed and 'STOP FULL AUTO' or 'FULL AUTO: OFF • EXPERIMENTAL COMBAT' end,function() app:toggleFarm() end)
     button('FARM','CHECK READINESS',function() app:checkReady() end)
     button('FARM','RECORD CURRENT OWN PLACEMENTS',function() app:record() end)
+    label('FARM','SINGLE-ACTION STORY TESTS\nRecord one tower from the selected slot; other defenders may stay placed. These buttons spend the displayed match Yen once and stop. Keep Full Auto OFF; leave the game controls alone during the 8-second readback. The report copies automatically. A successful test does not confirm a Rukia farming route.')
+    button('FARM',function() return 'TEST TARGET: EQUIPPED SLOT '..app.cfg.trialSlot end,function()
+        app:cycle('trialSlot',{1,2,3,4,5,6,7,8})
+    end)
+    button('FARM','RECORD ONE TEST TARGET',function() app:recordTrialTarget() end)
+    button('FARM',function() return app:trialButton('upgrade') end,function() app:runTrial('upgrade') end)
+    button('FARM',function() return app:trialButton('place') end,function() app:runTrial('place') end)
+    button('FARM','STOP SINGLE-ACTION TEST',function() app:stopTrial() end)
+    label('FARM',function() return app.trial:text() end,colors.text)
     field('FARM','Fallback deployment costs by equipped slot (comma separated)','recordCosts',false)
     button('FARM',function() return 'SELECTED MODE: '..app.cfg.mode end,function()
         app:cycle('mode',{'Dungeon','Story','Infinite','Challenge','Portal','Raid','Event','Legend'})
@@ -1382,6 +1556,7 @@ end)()
 local C=__modules.core
 local makeAdapter=__modules.roblox
 local makeUI=__modules.ui
+local makeTrial=__modules.trial
 local env=(type(getgenv)=='function' and getgenv()) or _G
 local deadline=os.clock()+30
 while not game:IsLoaded() and os.clock()<deadline do task.wait(.1) end
@@ -1407,9 +1582,11 @@ local saved=readJSON(filename) or {}
 local cfg=C.sanitize(saved.cfg)
 local log=C.logger(240)
 local app={alive=true,cfg=cfg,log=log,profile=type(saved.profile)=='table' and saved.profile or nil,
+    trialProfile=type(saved.trialProfile)=='table' and saved.trialProfile or nil,
     status='Observer only; live compatibility unverified',diskSaved=false,observedWins=0,observedLosses=0,
     reportRun=nil,reportOutcome=nil,lastWave=-1,lastRoster='',lastRefresh=0,lastCheckpoint=0}
 app.engine=C.engine(cfg,log)
+app.trial=makeTrial(C,cfg,log);app.trialQuotes={}
 app.recorder=C.recorder(log)
 app.adapter=makeAdapter(C,env,cfg,log)
 local function fmt(x) return x==nil and '?' or tostring(x) end
@@ -1418,6 +1595,7 @@ function app:notice(message)
 end
 function app:error(err)
     self.engine:stop('Runtime error; automation stopped')
+    self.trial:cancel('Runtime error; single-action result unconfirmed')
     self:notice(tostring(err):sub(1,300))
 end
 function app:unit() return C.chooseRukia((self.snapshot or {}).owned,self.cfg.selectedUuid) end
@@ -1494,6 +1672,7 @@ function app:refreshInventory()
 end
 function app:readClientCache(reportKind)
     self.engine:stop('Manual experimental client-cache read','IDLE')
+    self.trial:cancel('Client-cache read requested; test cancelled')
     self:notice('Attempting one loaded-client cache read; spending remains unavailable')
     local started,why=self.adapter:startClientCache()
     self.awaitCacheCopy=started and (reportKind or 'complete') or false
@@ -1520,6 +1699,7 @@ function app:nextRukia()
     self.engine:stop('Selected unit changed','IDLE');self:notice('Selected observed Rukia '..(idx%#list+1))
 end
 function app:set(key,v)
+    self.trial:cancel('Settings changed; test cancelled')
     if self.engine.armed then self.engine:stop('Settings changed; review before rearming','IDLE') end
     local limits={reserve={0,1000000},maxRuns={1,100},maxSeconds={30,7200},traitCap={0,1000},statCap={0,1000}}
     if limits[key] then
@@ -1530,11 +1710,14 @@ function app:set(key,v)
     end
 end
 function app:cycle(key,values)
+    self.trial:cancel('Target/mode changed; test cancelled')
     self.engine:stop('Target/mode changed; review before rearming','IDLE')
     cfg[key]=values[(table.find(values,cfg[key]) or 0)%#values+1]
+    if key=='trialSlot' then self.trialProfile=nil;self.trialQuotes={} end
     cfg.routeConfirmed=false;cfg.protocolConfirmed=false;cfg.replayFreeConfirmed=false
 end
 function app:toggle(key)
+    self.trial:cancel('Settings changed; test cancelled')
     self.engine:stop('Settings changed; review before rearming','IDLE')
     if table.find({'routeConfirmed','protocolConfirmed','replayFreeConfirmed'},key) and not cfg[key] then
         if not self.snapshot.stageVerified then self:notice('Observe the actual stage before confirming it');return end
@@ -1550,6 +1733,9 @@ end
 function app:toggleFarm()
     if self.engine.armed then self.engine:stop('Stopped by user','IDLE');return end
     self.snapshot=self.adapter:observe(os.clock())
+    if self.trial.pending or (self.trial.state=='UNCONFIRMED' and self.trial.attemptRun==self.snapshot.run) then
+        self:notice('Single-action test pending or unconfirmed; inspect its report before farming');return
+    end
     if not self.adapter:remote('spawn_unit') then self:notice('No spawn_unit endpoint; combat unavailable');return end
     if cfg.upgrade and not self.adapter:remote('upgrade_unit_ingame') then
         self:notice('Upgrade endpoint missing; disable upgrades or leave combat off');return
@@ -1559,14 +1745,47 @@ function app:toggleFarm()
 end
 function app:record()
     self.engine:stop('Recording requested','IDLE')
+    self.trial:cancel('Recording changed; test cancelled')
+    self.snapshot=self.adapter:observe(os.clock())
     local p,err=self.adapter:record(self.snapshot,cfg.recordCosts)
     if not p then self:notice(err);return end
     self.profile=p;cfg.protocolConfirmed=false;cfg.routeConfirmed=false;cfg.replayFreeConfirmed=false
     self:notice('Recorded '..#p.entries..' placements; costs/ordering need supervised verification')
 end
+function app:trialButton(kind)
+    local quote,why=self.trial:quote(kind,self.snapshot or {},self.trialProfile)
+    self.trialQuotes[kind]=quote
+    local title=kind=='upgrade' and 'TEST ONE UPGRADE' or 'TEST ONE PLACEMENT'
+    if not quote then return title..' • '..tostring(why) end
+    return title..'\n'..quote.id..' [slot '..fmt(quote.slot)..'] '..
+        (kind=='upgrade' and (quote.level..'→'..(quote.level+1)..' | ') or '| ')..quote.cost..' YEN'
+end
+function app:recordTrialTarget()
+    self.engine:stop('Recording single-action test target','IDLE')
+    self.trial:cancel('Test target changed; pending result unconfirmed')
+    self.snapshot=self.adapter:observe(os.clock())
+    local p,why=self.adapter:recordTestTarget(self.snapshot,cfg.trialSlot)
+    if not p then self:notice(why);return end
+    self.trialProfile=p;self.trialQuotes={}
+    self:notice('Recorded test target '..p.entries[1].id..' from equipped slot '..cfg.trialSlot)
+end
+function app:runTrial(kind)
+    if self.engine.armed or self.engine.pending then self:notice('Keep Full Auto OFF for a single-action test');return end
+    self.snapshot=self.adapter:observe(os.clock())
+    local action,why=self.trial:begin(kind,self.snapshot,self.trialProfile,self.trialQuotes[kind])
+    if not action then self:notice(why);return end
+    self.awaitTrialCopy=true
+    local sent,err=self.adapter:dispatch(action)
+    if not sent then self.trial:cancel('Test request not sent: '..tostring(err));self:notice(err)
+    else self:notice('One test request sent; wait up to 8 seconds without manual placement/upgrades. Report copies automatically.') end
+end
+function app:stopTrial()
+    self.trial:cancel('Stopped by user; result unconfirmed')
+end
 function app:saveSettings()
     if type(writefile)~='function' then self:notice('Local file saving unavailable');return false end
-    local ok=pcall(function() writefile(filename,HTTP:JSONEncode({cfg=cfg,profile=self.profile,version=C.version})) end)
+    local ok=pcall(function() writefile(filename,HTTP:JSONEncode({cfg=cfg,profile=self.profile,
+        trialProfile=self.trialProfile,version=C.version})) end)
     self:notice(ok and 'Settings saved; Auto remains OFF on reload' or 'Settings save failed')
     return ok
 end
@@ -1575,6 +1794,7 @@ function app:completeReport()
     local out={'[K] AA RUKIA '..C.version,'OFFLINE VERIFIED; LIVE GAME / DELTA UNVERIFIED',
         self:ownershipText(),self:objectiveText(),self:walletText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
+        self.trial:text(),
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
         self.adapter:combatReport(s),
         self.adapter.cacheReport or 'CLIENT CACHE READER: not attempted; use RUKIA → READ CLIENT CACHE + COPY REPORT',
@@ -1614,6 +1834,7 @@ function app:copyCombatReport()
     local blockers=C.readiness(self.snapshot,self.profile,cfg)
     local text='[K] AA RUKIA '..C.version..' | LIVE COMBAT UNVERIFIED\n'..
         self.adapter:combatReport(self.snapshot)..'\n'..
+        self.trial:text()..'\n'..
         (self.adapter.cacheReport or 'Client cache not connected')..'\n'..
         'READINESS: '..(#blockers==0 and 'prerequisites present; supervise testing' or table.concat(blockers,'; '))..
         '\n'..self.log:text()
@@ -1622,7 +1843,7 @@ function app:copyCombatReport()
     else print(text);self:notice('Clipboard unavailable; combat report printed') end
 end
 function app:copyConfig()
-    local txt=HTTP:JSONEncode({cfg=cfg,profile=self.profile})
+    local txt=HTTP:JSONEncode({cfg=cfg,profile=self.profile,trialProfile=self.trialProfile})
     if type(setclipboard)=='function' then pcall(setclipboard,txt);self:notice('Configuration copied; includes unit UUIDs')
     else self:notice('Clipboard unavailable') end
 end
@@ -1634,6 +1855,7 @@ end
 function app.stop()
     if not app.alive then return end
     app.engine:stop('Closed by user or replaced by new instance','IDLE')
+    app.trial:cancel('Closed or replaced; result unconfirmed')
     app.alive=false;app.adapter:close()
     if app.ui then app.ui:close() end
     if type(writefile)=='function' then
@@ -1664,7 +1886,7 @@ task.spawn(function()
         local ok,err=pcall(function()
             local now=os.clock();local s=app.adapter:observe(now);app.snapshot=s
             local failure=app.adapter:poll()
-            if failure then app.engine:reject(failure);app:notice(failure) end
+            if failure then app.engine:reject(failure);app.trial:cancel(failure);app:notice(failure) end
             if app.awaitCacheCopy and app.adapter.cacheDone then
                 local kind=app.awaitCacheCopy;app.awaitCacheCopy=false
                 if kind=='combat' then app:copyCombatReport() else app:copyReport() end
@@ -1675,6 +1897,10 @@ task.spawn(function()
             for _,u in ipairs(s.roster) do roster[#roster+1]=fmt(u.slot)..':'..u.id end
             local signature=table.concat(roster,',')
             if signature~=app.lastRoster then app.lastRoster=signature;log:add('EQUIPPED OBSERVED',signature) end
+            app.trial:tick(s)
+            if app.awaitTrialCopy and not app.trial.pending then
+                app.awaitTrialCopy=false;app:copyCombatReport()
+            end
             local request=app.engine:tick(s,app.profile)
             if request then
                 local sent,why=app.adapter:dispatch(request)

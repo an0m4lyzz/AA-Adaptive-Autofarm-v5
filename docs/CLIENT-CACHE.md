@@ -4,6 +4,8 @@ The user's v6.0.2 report confirms lobby detection, numeric account balances, Rep
 
 The subsequent **v6.0.3 live report recognizes 77 units, six equipped slots, two reroll tokens and fruit counts** through Loader.init.upvalue#12.ItemInventoryServiceClient. This is evidence that this cache shape works in the reported session, not that the inventory is complete, server-fresh or enough for combat. The next test is a free Story match, not another lobby tree scan.
 
+The **v6.0.4 match report** now observes Loader.LevelData stage namek_level_1, Story mode, match cash 400 from resource, Units definitions with cost scale 1 and the exact equipped Bulma tower with position, upgrade 0 and next quote 1,500. Read-only combat observation is demonstrated for that session; actual place/upgrade requests still require the separate v6.0.5 single-action test in TESTING.md.
+
 ## Approach and evidence
 
 Historical primary code references show two relevant patterns:

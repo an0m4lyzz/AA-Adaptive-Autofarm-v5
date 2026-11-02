@@ -1,5 +1,6 @@
 local C=require('../src/core')
 local factory=require('../src/roblox')
+local makeTrial=require('../src/trial')
 local n=0
 local function check(name,fn)
     local ok,err=pcall(fn);assert(ok,name..': '..tostring(err));n+=1;print('PASS '..name)
@@ -445,5 +446,61 @@ check('late map response is rejected even when the polling timer has not run',fu
     ws.kids={node('_UNITS'),w,node('_MAP_CONFIG','Folder',{}, {remote})}
     a:observe(0);assert(coroutine.resume(tasks[1]))
     assert(not a.stage and env.K_AA_NETWORK_PENDING==nil)
+end)
+local function trialWorld()
+    local a,env,cfg,ws,rs,_,player,tasks=world({CFrame={new=function(x,y,z) return {x,y,z} end}})
+    player.attrs={}
+    local money=node('resource','NumberValue');money.Value=2000
+    player.kids[#player.kids+1]=node('_stats','Folder',{}, {money})
+    player.kids[#player.kids+1]=node('owned_units','Folder',{}, {node('entry','Folder',
+        {uuid='a',unit_id='bulma',equipped_slot=4,placement_cost=800})})
+    local function tower()
+        local part=node('_hitbox','BasePart');part.Position={X=1,Y=2,Z=3}
+        return node('tower','Model',{}, {part,node('_stats','Folder',
+            {uuid='a',id='bulma',player_id=12,upgrade=0,next_upgrade_cost=1500})})
+    end
+    local old=tower();local folder=node('_UNITS','Folder',{}, {old})
+    local wave=node('_wave_num','IntValue');wave.Value=1;ws.kids={folder,wave}
+    a:observe(10);a.stage='namek_level_1';a.mode='Story'
+    local s=a:observe(11);local p=a:record(s,'');assert(p)
+    local t=makeTrial(C,cfg,C.logger())
+    return a,env,rs,t,s,p,old,money,folder,tower,tasks
+end
+check('one upgrade trial dispatches the observed model once and confirms adapter readback',function()
+    local a,env,rs,t,s,p,old,money,_,_,tasks=trialWorld();local calls=0
+    local remote=node('upgrade_unit_ingame','RemoteFunction')
+    function remote:InvokeServer(model)
+        assert(model==old);calls+=1;model:FindFirstChild('_stats').attrs.upgrade=1;money.Value=500;return true
+    end
+    rs.kids={node('endpoints','Folder',{}, {node('client_to_server','Folder',{}, {remote})})}
+    local q=t:quote('upgrade',s,p);assert(q and calls==0)
+    local action=t:begin('upgrade',s,p,q);assert(a:dispatch(action) and env.K_AA_NETWORK_PENDING)
+    assert(coroutine.resume(tasks[1]));t:tick(a:observe(12));t:tick(a:observe(13))
+    assert(t.upgrades==1 and calls==1 and not t.pending and env.K_AA_NETWORK_PENDING==nil)
+end)
+check('one placement trial dispatches exact UUID and recorded coordinates once',function()
+    local a,env,rs,t,_,p,_,money,folder,tower,tasks=trialWorld();local calls=0
+    folder.kids={};local s=a:observe(12)
+    local remote=node('spawn_unit','RemoteFunction')
+    function remote:InvokeServer(uuid,position)
+        assert(uuid=='a' and position[1]==1 and position[2]==2 and position[3]==3)
+        calls+=1;folder.kids={tower()};money.Value=1200;return true
+    end
+    rs.kids={node('endpoints','Folder',{}, {node('client_to_server','Folder',{}, {remote})})}
+    local q=t:quote('place',s,p);assert(q and calls==0)
+    assert(a:dispatch(t:begin('place',s,p,q)));assert(coroutine.resume(tasks[1]))
+    t:tick(a:observe(13));t:tick(a:observe(14))
+    assert(t.placements==1 and calls==1 and not t.pending and env.K_AA_NETWORK_PENDING==nil)
+end)
+check('one test target can be recorded while unrelated defenders remain placed',function()
+    local a,_,_,_,s=trialWorld()
+    s.units[#s.units+1]={uuid='defender',id='nagumo_evolved',key='defender',pos={20,2,20}}
+    local p=a:recordTestTarget(s,4)
+    assert(p and #p.entries==1 and p.entries[1].id=='bulma' and p.testSlot==4)
+end)
+check('multiple copies in a selected test slot cannot choose an arbitrary target',function()
+    local a,_,_,_,s=trialWorld()
+    local copy=table.clone(s.units[1]);copy.key='another';copy.pos={20,2,20};s.units[#s.units+1]=copy
+    assert(not a:recordTestTarget(s,4))
 end)
 print('All '..n..' adapter tests passed')

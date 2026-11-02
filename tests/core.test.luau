@@ -214,4 +214,22 @@ end)
 check('manually verified fallback prices survive settings reload',function()
     assert(C.sanitize({recordCosts='100,,300'}).recordCosts=='100,,300')
 end)
+check('ambiguous new placement models cannot verify a placement',function()
+    local match,ambiguous=C.placementVerified({uuid='a',id='rukia_2',pos={1,2,3},before={}},
+        {{key='new1',uuid='a',id='rukia_2',pos={1,2,3}},
+        {key='new2',uuid='a',id='rukia_2',pos={2,2,3}}})
+    assert(not match and ambiguous)
+end)
+check('ambiguous placement feedback stops recorded combat immediately',function()
+    local e=C.engine(config());local s=snap();local p=profile()
+    assert(e:arm(s,p));assert(e:tick(s,p).kind=='place')
+    s.now=2;s.units={{key='new1',uuid='a',id='rukia_2',pos={1,2,3}},
+        {key='new2',uuid='a',id='rukia_2',pos={2,2,3}}}
+    e:tick(s,p);assert(not e.armed and e.placements==0)
+end)
+check('test target slot is preserved and bounded in settings',function()
+    assert(C.sanitize({trialSlot=4}).trialSlot==4)
+    assert(C.sanitize({trialSlot=0}).trialSlot==1)
+    assert(C.sanitize({trialSlot=100}).trialSlot==8)
+end)
 print('All '..n..' tests passed')

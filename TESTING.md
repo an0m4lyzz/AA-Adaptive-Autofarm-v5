@@ -17,6 +17,20 @@ The user's v6.0.3 report already recognized 77 owned records and six equipped sl
 
 Missing scale or definitions leaves computed costs unknown. Do not enable combat to bypass a blocker. The focused report names the missing source. Dungeon access, keys and rewards are not part of this free test.
 
+## Current next test: one upgrade (v6.0.5)
+
+The submitted v6.0.4 report now observes namek_level_1, Story, cash 400, explicit cost scale 1, all six prices and Bulma's exact identity, position and next quote of 1,500 Yen. The read-only adapter boundary is demonstrated for that session. No automated placement or upgrade has been demonstrated yet.
+
+1. Run the unchanged loadstring inside an active free Story stage and confirm **6.0.5**. Keep Full Auto OFF. If the previous match ended, use another free Story attempt.
+2. Use FARM → READ MATCH DATA + COPY COMBAT REPORT once to connect this injection. Place Bulma manually if needed. Other defenders may stay placed to protect the base.
+3. For the reported team leave **TEST TARGET: EQUIPPED SLOT 4**, then tap **RECORD ONE TEST TARGET**. This records only Bulma's one copy into a separate test profile; the farming profile is preserved.
+4. When cash covers the displayed upgrade price plus SETTINGS reserve, inspect the button's unit/slot/level/price and tap **TEST ONE UPGRADE** once. The reported quote was bulma, slot 4, 0→1, 1,500 Yen. A stale/changed quote is blocked; read the refreshed button before another click.
+5. Do not manually place or upgrade during the eight-second readback. The report copies automatically when the test observes the exact level change or stops unconfirmed. Paste that report.
+
+This emits one upgrade request, without requiring or setting Rukia-route/protocol confirmations. It does not turn on Full Auto or replay. At most one attempt per action kind is allowed per observed run in this controller. Any unconfirmed attempt blocks further mutation testing/farming for that run. STOP cannot undo a native request already sent. No live test of these new buttons has been performed here.
+
+After an observed upgrade, the later placement test uses the same recorded target spot. **Manually sell that test copy**, wait until the displayed deployment price plus reserve is affordable, and tap TEST ONE PLACEMENT once. No automatic selling occurs. Existing target copies, occupied spots or multiple matching readbacks block the test. Only a unique new own model with exact UUID/ID and position can count as an observed placement after request.
+
 ## Read the client cache
 
 1. Keep Full Auto OFF and open the game's Units/Collection once.

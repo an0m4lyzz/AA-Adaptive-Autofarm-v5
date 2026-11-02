@@ -1,6 +1,7 @@
 local C=require('./core')
 local makeAdapter=require('./roblox')
 local makeUI=require('./ui')
+local makeTrial=require('./trial')
 local env=(type(getgenv)=='function' and getgenv()) or _G
 local deadline=os.clock()+30
 while not game:IsLoaded() and os.clock()<deadline do task.wait(.1) end
@@ -26,9 +27,11 @@ local saved=readJSON(filename) or {}
 local cfg=C.sanitize(saved.cfg)
 local log=C.logger(240)
 local app={alive=true,cfg=cfg,log=log,profile=type(saved.profile)=='table' and saved.profile or nil,
+    trialProfile=type(saved.trialProfile)=='table' and saved.trialProfile or nil,
     status='Observer only; live compatibility unverified',diskSaved=false,observedWins=0,observedLosses=0,
     reportRun=nil,reportOutcome=nil,lastWave=-1,lastRoster='',lastRefresh=0,lastCheckpoint=0}
 app.engine=C.engine(cfg,log)
+app.trial=makeTrial(C,cfg,log);app.trialQuotes={}
 app.recorder=C.recorder(log)
 app.adapter=makeAdapter(C,env,cfg,log)
 local function fmt(x) return x==nil and '?' or tostring(x) end
@@ -37,6 +40,7 @@ function app:notice(message)
 end
 function app:error(err)
     self.engine:stop('Runtime error; automation stopped')
+    self.trial:cancel('Runtime error; single-action result unconfirmed')
     self:notice(tostring(err):sub(1,300))
 end
 function app:unit() return C.chooseRukia((self.snapshot or {}).owned,self.cfg.selectedUuid) end
@@ -113,6 +117,7 @@ function app:refreshInventory()
 end
 function app:readClientCache(reportKind)
     self.engine:stop('Manual experimental client-cache read','IDLE')
+    self.trial:cancel('Client-cache read requested; test cancelled')
     self:notice('Attempting one loaded-client cache read; spending remains unavailable')
     local started,why=self.adapter:startClientCache()
     self.awaitCacheCopy=started and (reportKind or 'complete') or false
@@ -139,6 +144,7 @@ function app:nextRukia()
     self.engine:stop('Selected unit changed','IDLE');self:notice('Selected observed Rukia '..(idx%#list+1))
 end
 function app:set(key,v)
+    self.trial:cancel('Settings changed; test cancelled')
     if self.engine.armed then self.engine:stop('Settings changed; review before rearming','IDLE') end
     local limits={reserve={0,1000000},maxRuns={1,100},maxSeconds={30,7200},traitCap={0,1000},statCap={0,1000}}
     if limits[key] then
@@ -149,11 +155,14 @@ function app:set(key,v)
     end
 end
 function app:cycle(key,values)
+    self.trial:cancel('Target/mode changed; test cancelled')
     self.engine:stop('Target/mode changed; review before rearming','IDLE')
     cfg[key]=values[(table.find(values,cfg[key]) or 0)%#values+1]
+    if key=='trialSlot' then self.trialProfile=nil;self.trialQuotes={} end
     cfg.routeConfirmed=false;cfg.protocolConfirmed=false;cfg.replayFreeConfirmed=false
 end
 function app:toggle(key)
+    self.trial:cancel('Settings changed; test cancelled')
     self.engine:stop('Settings changed; review before rearming','IDLE')
     if table.find({'routeConfirmed','protocolConfirmed','replayFreeConfirmed'},key) and not cfg[key] then
         if not self.snapshot.stageVerified then self:notice('Observe the actual stage before confirming it');return end
@@ -169,6 +178,9 @@ end
 function app:toggleFarm()
     if self.engine.armed then self.engine:stop('Stopped by user','IDLE');return end
     self.snapshot=self.adapter:observe(os.clock())
+    if self.trial.pending or (self.trial.state=='UNCONFIRMED' and self.trial.attemptRun==self.snapshot.run) then
+        self:notice('Single-action test pending or unconfirmed; inspect its report before farming');return
+    end
     if not self.adapter:remote('spawn_unit') then self:notice('No spawn_unit endpoint; combat unavailable');return end
     if cfg.upgrade and not self.adapter:remote('upgrade_unit_ingame') then
         self:notice('Upgrade endpoint missing; disable upgrades or leave combat off');return
@@ -178,14 +190,47 @@ function app:toggleFarm()
 end
 function app:record()
     self.engine:stop('Recording requested','IDLE')
+    self.trial:cancel('Recording changed; test cancelled')
+    self.snapshot=self.adapter:observe(os.clock())
     local p,err=self.adapter:record(self.snapshot,cfg.recordCosts)
     if not p then self:notice(err);return end
     self.profile=p;cfg.protocolConfirmed=false;cfg.routeConfirmed=false;cfg.replayFreeConfirmed=false
     self:notice('Recorded '..#p.entries..' placements; costs/ordering need supervised verification')
 end
+function app:trialButton(kind)
+    local quote,why=self.trial:quote(kind,self.snapshot or {},self.trialProfile)
+    self.trialQuotes[kind]=quote
+    local title=kind=='upgrade' and 'TEST ONE UPGRADE' or 'TEST ONE PLACEMENT'
+    if not quote then return title..' • '..tostring(why) end
+    return title..'\n'..quote.id..' [slot '..fmt(quote.slot)..'] '..
+        (kind=='upgrade' and (quote.level..'→'..(quote.level+1)..' | ') or '| ')..quote.cost..' YEN'
+end
+function app:recordTrialTarget()
+    self.engine:stop('Recording single-action test target','IDLE')
+    self.trial:cancel('Test target changed; pending result unconfirmed')
+    self.snapshot=self.adapter:observe(os.clock())
+    local p,why=self.adapter:recordTestTarget(self.snapshot,cfg.trialSlot)
+    if not p then self:notice(why);return end
+    self.trialProfile=p;self.trialQuotes={}
+    self:notice('Recorded test target '..p.entries[1].id..' from equipped slot '..cfg.trialSlot)
+end
+function app:runTrial(kind)
+    if self.engine.armed or self.engine.pending then self:notice('Keep Full Auto OFF for a single-action test');return end
+    self.snapshot=self.adapter:observe(os.clock())
+    local action,why=self.trial:begin(kind,self.snapshot,self.trialProfile,self.trialQuotes[kind])
+    if not action then self:notice(why);return end
+    self.awaitTrialCopy=true
+    local sent,err=self.adapter:dispatch(action)
+    if not sent then self.trial:cancel('Test request not sent: '..tostring(err));self:notice(err)
+    else self:notice('One test request sent; wait up to 8 seconds without manual placement/upgrades. Report copies automatically.') end
+end
+function app:stopTrial()
+    self.trial:cancel('Stopped by user; result unconfirmed')
+end
 function app:saveSettings()
     if type(writefile)~='function' then self:notice('Local file saving unavailable');return false end
-    local ok=pcall(function() writefile(filename,HTTP:JSONEncode({cfg=cfg,profile=self.profile,version=C.version})) end)
+    local ok=pcall(function() writefile(filename,HTTP:JSONEncode({cfg=cfg,profile=self.profile,
+        trialProfile=self.trialProfile,version=C.version})) end)
     self:notice(ok and 'Settings saved; Auto remains OFF on reload' or 'Settings save failed')
     return ok
 end
@@ -194,6 +239,7 @@ function app:completeReport()
     local out={'[K] AA RUKIA '..C.version,'OFFLINE VERIFIED; LIVE GAME / DELTA UNVERIFIED',
         self:ownershipText(),self:objectiveText(),self:walletText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
+        self.trial:text(),
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
         self.adapter:combatReport(s),
         self.adapter.cacheReport or 'CLIENT CACHE READER: not attempted; use RUKIA → READ CLIENT CACHE + COPY REPORT',
@@ -233,6 +279,7 @@ function app:copyCombatReport()
     local blockers=C.readiness(self.snapshot,self.profile,cfg)
     local text='[K] AA RUKIA '..C.version..' | LIVE COMBAT UNVERIFIED\n'..
         self.adapter:combatReport(self.snapshot)..'\n'..
+        self.trial:text()..'\n'..
         (self.adapter.cacheReport or 'Client cache not connected')..'\n'..
         'READINESS: '..(#blockers==0 and 'prerequisites present; supervise testing' or table.concat(blockers,'; '))..
         '\n'..self.log:text()
@@ -241,7 +288,7 @@ function app:copyCombatReport()
     else print(text);self:notice('Clipboard unavailable; combat report printed') end
 end
 function app:copyConfig()
-    local txt=HTTP:JSONEncode({cfg=cfg,profile=self.profile})
+    local txt=HTTP:JSONEncode({cfg=cfg,profile=self.profile,trialProfile=self.trialProfile})
     if type(setclipboard)=='function' then pcall(setclipboard,txt);self:notice('Configuration copied; includes unit UUIDs')
     else self:notice('Clipboard unavailable') end
 end
@@ -253,6 +300,7 @@ end
 function app.stop()
     if not app.alive then return end
     app.engine:stop('Closed by user or replaced by new instance','IDLE')
+    app.trial:cancel('Closed or replaced; result unconfirmed')
     app.alive=false;app.adapter:close()
     if app.ui then app.ui:close() end
     if type(writefile)=='function' then
@@ -283,7 +331,7 @@ task.spawn(function()
         local ok,err=pcall(function()
             local now=os.clock();local s=app.adapter:observe(now);app.snapshot=s
             local failure=app.adapter:poll()
-            if failure then app.engine:reject(failure);app:notice(failure) end
+            if failure then app.engine:reject(failure);app.trial:cancel(failure);app:notice(failure) end
             if app.awaitCacheCopy and app.adapter.cacheDone then
                 local kind=app.awaitCacheCopy;app.awaitCacheCopy=false
                 if kind=='combat' then app:copyCombatReport() else app:copyReport() end
@@ -294,6 +342,10 @@ task.spawn(function()
             for _,u in ipairs(s.roster) do roster[#roster+1]=fmt(u.slot)..':'..u.id end
             local signature=table.concat(roster,',')
             if signature~=app.lastRoster then app.lastRoster=signature;log:add('EQUIPPED OBSERVED',signature) end
+            app.trial:tick(s)
+            if app.awaitTrialCopy and not app.trial.pending then
+                app.awaitTrialCopy=false;app:copyCombatReport()
+            end
             local request=app.engine:tick(s,app.profile)
             if request then
                 local sent,why=app.adapter:dispatch(request)

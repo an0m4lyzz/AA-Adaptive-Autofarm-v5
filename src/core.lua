@@ -1,6 +1,6 @@
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.4'
+C.version = '6.0.5'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -9,7 +9,7 @@ C.itemLabels = {SacredTreasure='Sacred Treasure',StarFruit='Star Fruit',StarFrui
 C.defaults = {goal='Acquire',targetTrait='Unique',targetGrade='SSS',reserve=0,maxRuns=1,
     maxSeconds=1200,upgrade=true,replay=false,replayFreeConfirmed=false,protocolConfirmed=false,
     routeConfirmed=false,traitCap=0,statCap=0,inventoryPath='',resourcePath='',cashPath='',
-    mode='Dungeon',logDisk=false,selectedUuid='',recordCosts=''}
+    mode='Dungeon',logDisk=false,selectedUuid='',recordCosts='',trialSlot=4}
 function C.finite(x) return type(x)=='number' and x==x and math.abs(x)<1e12 end
 function C.deficit(have,need)
     if not C.finite(have) then return nil end
@@ -73,6 +73,8 @@ function C.sanitize(raw)
         cfg[k]=math.clamp(math.floor(cfg[k]),0,limit)
     end
     cfg.maxRuns=math.max(1,cfg.maxRuns);cfg.maxSeconds=math.max(30,cfg.maxSeconds)
+    if not C.finite(cfg.trialSlot) then cfg.trialSlot=C.defaults.trialSlot end
+    cfg.trialSlot=math.clamp(math.floor(cfg.trialSlot),1,8)
     if not table.find({'Acquire','Trait','Stats','Evolution','Build'},cfg.goal) then cfg.goal='Acquire' end
     if not grades[cfg.targetGrade] then cfg.targetGrade='SSS' end
     if not table.find({'Unique','Divine','Celestial','Reaper','Godspeed','Sniper'},cfg.targetTrait) then cfg.targetTrait='Unique' end
@@ -98,11 +100,15 @@ function C.distance(a,b)
     return math.sqrt((a[1]-b[1])^2+(a[2]-b[2])^2+(a[3]-b[3])^2)
 end
 function C.placementVerified(p,units)
+    local found
     for _,u in ipairs(units or {}) do
         if u.key and not p.before[u.key] and u.uuid==p.uuid and u.id==p.id
-            and C.distance(u.pos,p.pos)<=3 then return u end
+            and C.distance(u.pos,p.pos)<=3 then
+            if found and found.key~=u.key then return nil,true end
+            found=u
+        end
     end
-    return nil
+    return found,false
 end
 function C.readiness(s,p,cfg)
     local blockers={}
@@ -264,14 +270,15 @@ function C.engine(cfg,log)
         end
         if self.pending then
             local q=self.pending
-            local confirmed
-            if q.kind=='place' then confirmed=C.placementVerified(q,s.units)
+            local confirmed,ambiguous
+            if q.kind=='place' then confirmed,ambiguous=C.placementVerified(q,s.units)
             elseif q.kind=='upgrade' then
                 for _,u in ipairs(s.units) do
                     if u.key==q.key and u.uuid==q.uuid and u.id==q.id
                         and C.finite(u.level) and u.level>q.level then confirmed=u;break end
                 end
             end
+            if ambiguous then self:stop('Ambiguous placement feedback; no action confirmed');return nil end
             if confirmed then
                 self.log:add('CONFIRMED',q.kind..' '..q.id)
                 if q.kind=='place' then self.index+=1;self.placements+=1 else self.upgrades+=1 end
