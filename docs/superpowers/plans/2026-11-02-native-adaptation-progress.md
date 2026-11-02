@@ -1,6 +1,6 @@
 # SDD ledger — plan: docs/superpowers/plans/2026-11-02-native-adaptation.md
 
-Base335eb63397633bcd26eb8c6a3c000653e1279d7c, remote tree83f64476b8adf78bbee95bfcc9a08c3ad95646bd. Fresh feature checkout zeno-adaptation-v6_2.202 baseline tests pass.
+Base335eb63396633bcd26eb8c6a3c000653e1279d7c, remote tree83f64476b8adf78bbee95bfcc9a08c3ad95646bd. Fresh feature checkout zeno-adaptation-v6_2.202 baseline tests pass.
 
 Ruling: user steering superseded an external Zeno bridge before any product edits. Build native independent implementations; no third-party hub dependency. Existing autonomous instruction and repeated requests to stop confirmations authorize routine implementation and publication.
 
@@ -24,3 +24,5 @@ Task5: documentation and one independent whole-change review complete in working
 Current full-suite evidence /tmp/aa-adapt-durable-green.log:397 tests green, active Luau compile, reproducible bundle, unchanged loader, API and whitespace checks pass. No live v7 session; all new native features remain experimental. Ordinary injection stays unarmed; explicit following is capped and revocable; no new key-consuming endpoint or premium mutations. Publication pending fresh expected-head lease and exact remote bundle verification.
 
 Final boundary regression: a maximum-duration session begun after following was enabled clamps its original deadline to remaining follow permission, rather than failing its first durable checkpoint. Actual-entry10, total397 tests pass on the final product tree. Publishing via exact expected main335eb63396633bcd26eb8c6a3c000653e1279d7c; exact remote tree/bundle verification follows publication.
+
+Resumed after the user's pause: recovered the exact saved candidate a5477bebca249fb04cea496bcdb85ee40c13e221, tree72fd60218002c94816307db1cbcff4483fd4b1a1. Live main remains335eb63396633bcd26eb8c6a3c000653e1279d7c. Fresh full scripts/check.py run again passes all397 tests, compilation, bundle and API checks; whitespace check passes. Corrected the base-SHA transcription in this ledger only; product code is unchanged. Publication uses a fresh expected-head lease, then verifies exact remote bundle bytes.
