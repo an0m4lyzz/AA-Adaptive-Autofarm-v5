@@ -37,3 +37,10 @@ Observation time is not server freshness. Following a retained registry entry do
 ## Test
 
 For a new inventory failure, open Collection once and tap **RUKIA → READ CLIENT CACHE + COPY REPORT**. For the already connected v6.0.3 inventory, move to the free match test in TESTING.md and use **FARM → READ MATCH DATA + COPY COMBAT REPORT**. Compare observations with the game before arming combat. Repeated metadata scans are unnecessary.
+
+
+## v7 native adaptation extension
+
+The explicit reader now also inspects existing load_core_service closure upvalues (up to32, in addition to init/load_client_service) and finds named cached DungeonServiceClient, DungeonServiceCore and ProgressionServiceCore exports. No service getter or initializer is called. The supported existing-run Dungeon snapshot is copied/validated; unknown schema/foreign owner clears route evidence. A positive shop cap permits the existing loaded pure shop_prices calculation once per observed shop state; errors leave prices unknown. A requested next-Story preference may read a loaded progression export only for actual Story and accepts a concrete next ID, not a boolean availability guess.
+
+Opted-in, attested teleport continuation permits one destination cache connection after a10-second initialization delay within a40-second readiness window; ordinary loads still require the explicit button. All previous cache isolation/deadline limits apply. Missing caps, prices, native room identity or own-tower fields stop mutations. See ZENO-ADAPTATION.md and the new current TESTING.md section.

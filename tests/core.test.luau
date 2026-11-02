@@ -237,4 +237,20 @@ check('an unresolved legacy action cannot rearm in the same observed run',functi
     assert(e:arm(s,p));assert(e:tick(s,p));e:stop('user stop')
     assert(not e:arm(s,p));s.run='new';assert(e:arm(s,p))
 end)
+check('native adaptation settings never restore action or teleport continuation consents',function()
+    local c=C.sanitize({autoFollow=true,dungeonConsent=true,dungeonOpenChests=true,dungeonShopCap=500,
+        autoMethod='RoundRobin',autoDistance=999,dungeonPreset='unknown'})
+    assert(c.autoFollow==false and c.dungeonConsent==false and c.dungeonOpenChests==false)
+    assert(c.dungeonShopCap==500 and c.autoDistance==100 and c.dungeonPreset=='Safe')
+end)
+check('an external Zeno controller blocks legacy and profile mutation readiness',function()
+    local s=snap();s.externalControllerActive=true
+    assert(#C.profileReadiness(s,profile(),config())>0)
+end)
+check('only a matching queued new-job ticket may preserve follow permission during replacement',function()
+    local old={instanceJob='old'};local ticket={nonce='n',jobId='new',userId=12,universeId=99}
+    assert(C.teleportReplacement(old,ticket,12,99,'new'))
+    assert(not C.teleportReplacement(old,ticket,12,99,'old'))
+    ticket.userId=13;assert(not C.teleportReplacement(old,ticket,12,99,'new'))
+end)
 print('All '..n..' tests passed')

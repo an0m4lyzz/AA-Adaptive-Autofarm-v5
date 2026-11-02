@@ -131,11 +131,33 @@ return function(C)
         local entry=tableAt(binding.registry,binding.name)
         return tableAt(entry,'module') or entry
     end
+    function I.named(roots,names)
+        local out={}
+        for i=1,math.min(#roots,97) do
+            local root=rawget(roots,i)
+            local value=type(root)=='table' and rawget(root,'value')
+            if type(value)=='table' then
+                local parents={value}
+                for _,key in ipairs({'CLIENT_SERVICE','CORE_SERVICE','client_services','core_services','services','_services','modules','_modules'}) do
+                    local nested=tableAt(value,key);if nested then parents[#parents+1]=nested end
+                end
+                for _,parent in ipairs(parents) do
+                    for j=1,math.min(#names,8) do
+                        local name=rawget(names,j)
+                        if type(name)=='string' and not out[name] and tableAt(parent,name) then
+                            out[name]={registry=parent,name=name,source=tostring(rawget(root,'source') or 'cache')..'.'..name}
+                        end
+                    end
+                end
+            end
+        end
+        return out
+    end
     function I.find(roots,userId)
         local seen={}
         local containers={'CLIENT_SERVICE','client_services','services','_services','modules','_modules'}
         for _,serviceName in ipairs({'ItemInventoryServiceClient','StatsServiceClient','GUIService'}) do
-            for i=1,math.min(#roots,65) do
+            for i=1,math.min(#roots,97) do
                 local root=roots[i]
                 local value=root and root.value
                 if type(value)=='table' then

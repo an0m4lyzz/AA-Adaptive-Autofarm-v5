@@ -341,7 +341,7 @@ local function combatFixture(skipUnits)
     local w=node('_wave_num','IntValue');w.Value=1
     local scale=node('player_cost_scale','NumberValue');scale.Value=1.5
     ws.kids={node('_UNITS'),w,node('_DATA','Folder',{}, {node('LevelModifiers','Folder',{}, {scale})})}
-    return a,env,cfg,ws,player,tasks,export,defs,calls,scale,loaded,units
+    return a,env,cfg,ws,player,tasks,export,defs,calls,scale,loaded,units,registry
 end
 check('manual cache read also observes loaded level data without calling load_data',function()
     local a,_,_,_,_,tasks= combatFixture()
@@ -607,5 +607,119 @@ check('native snapshots retain incomplete declared equipment instead of certifyi
     a.clientService.session.collection.collection_profile_data.equipped_units[2]='not-in-owned-cache'
     s=a:observe(15)
     assert(#s.roster==1 and s.equippedDeclared==2 and not s.rosterComplete)
+end)
+check('automatic planning metadata does not masquerade as actual collection range',function()
+    local a,_,_,_,_,tasks,_,defs=combatFixture();defs.bulma.spawn_cap=1;defs.bulma.range=7
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    local s=a:observe(10)
+    assert(s.roster[1].spawnCap==1 and s.roster[1].planningRange==7 and s.roster[1].range==nil)
+end)
+check('loaded Dungeon bindings supply normalized snapshots and disappear on removal',function()
+    local a,_,_,_,_,tasks,export,_,_,_,_,_,registry=combatFixture()
+    local raw={_started=true,_finished=false,_resources={money=10,treasure=0,treasure_gold=0},
+        next={['1']={_d=8,_t={['1']=true}}},selected_next={choice_str='1',lives=5},_items={},current_shops={}}
+    registry.DungeonServiceClient={module={session={profile_data={dungeon_data=raw}}}}
+    registry.DungeonServiceCore={module={TYPES={SHOP=1,SHRINE=7,OPEN_CHEST=6},ITEMS={},NUM_ROOMS=20}}
+    export.LevelData._dungeon={depth=8,choice_str='1'}
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    local s=a:observe(10)
+    assert(s.mode=='Dungeon' and s.dungeon.valid and s.dungeon.depth==8 and s.dungeonAt==10)
+    registry.DungeonServiceClient=nil;s=a:observe(11)
+    assert(not s.dungeon.valid and s.dungeonAt==nil)
+end)
+check('foreign Dungeon sessions cannot become this accounts route evidence',function()
+    local a,_,_,_,_,tasks,_,_,_,_,_,_,registry=combatFixture()
+    registry.DungeonServiceClient={module={session={profile_data={user_id=99,dungeon_data={}}}}}
+    registry.DungeonServiceCore={module={}}
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    local s=a:observe(10);assert(not s.dungeon.valid and s.dungeonAt==nil)
+end)
+check('external Zeno presence blocks native mutations even below controller readiness',function()
+    local a,env,_,_,rs=world();env.ZenoHub={}
+    local remote=node('spawn_unit','RemoteFunction')
+    rs.kids={node('endpoints','Folder',{}, {node('client_to_server','Folder',{}, {remote})})}
+    assert(a:observe(10).externalControllerActive)
+    assert(not a:issue('place',{}) and env.K_AA_NETWORK_PENDING==nil)
+end)
+check('Dungeon transport exposes only current-run actions and requires explicit permission',function()
+    local a,_,cfg,_,rs,_,_,tasks=world()
+    local calls=0;local remote=node('dungeon_enter_room','RemoteFunction')
+    function remote:InvokeServer(choice) calls+=1;assert(choice=='2');return true end
+    rs.kids={node('endpoints','Folder',{}, {node('client_to_server','Folder',{}, {remote})})}
+    assert(not a:dispatch({kind='dungeon',name='dungeon_start',args={}}))
+    assert(not a:dispatch({kind='dungeon',name='dungeon_enter_room',args={'2'}}))
+    cfg.dungeonConsent=true
+    assert(not a:dispatch({kind='dungeon',name='dungeon_enter_room',args={'4'}}))
+    assert(a:dispatch({kind='dungeon',name='dungeon_enter_room',args={'2'}}))
+    assert(coroutine.resume(tasks[1]) and calls==1)
+end)
+check('chest transport never opens without its separate session permission',function()
+    local a,_,cfg,_,rs,_,_,tasks=world();cfg.dungeonConsent=true
+    local remote=node('dungeon_open_chest','RemoteFunction');function remote:InvokeServer(rare) assert(rare==true);return true end
+    rs.kids={node('endpoints','Folder',{}, {node('client_to_server','Folder',{}, {remote})})}
+    assert(not a:dispatch({kind='dungeon',name='dungeon_open_chest',args={true}}))
+    cfg.dungeonOpenChests=true;assert(a:dispatch({kind='dungeon',name='dungeon_open_chest',args={true}}))
+    assert(coroutine.resume(tasks[1]))
+end)
+check('the match-start vote is opt-in and its native voting flag is observed',function()
+    local a,_,cfg,ws,rs,_,_,tasks=world();local wave=node('_wave_num','IntValue');wave.Value=0
+    ws.kids={node('_UNITS'),wave,node('_DATA','Folder',{}, {node('VoteStart','Folder',{VotingFinished=false})})}
+    local remote=node('vote_start','RemoteFunction');function remote:InvokeServer() return true end
+    rs.kids={node('endpoints','Folder',{}, {node('client_to_server','Folder',{}, {remote})})}
+    assert(a:observe(10).voteStartFinished==false)
+    assert(not a:dispatch({kind='start'}));cfg.autoStartWaves=true
+    assert(a:dispatch({kind='start'}));assert(coroutine.resume(tasks[1]))
+end)
+check('shop prices use the loaded explicit discount helper instead of assuming base price',function()
+    local a,_,cfg,_,_,tasks,export,_,_,_,_,_,registry=combatFixture();cfg.dungeonShopCap=100
+    local raw={_started=true,_finished=false,_resources={money=100,treasure=0,treasure_gold=0},
+        next={['1']={_d=8,_t={['1']=true}}},selected_next={choice_str='1',lives=5},_items={},
+        current_shops={{_t=1,data={{id='tome'}}}}}
+    local calls=0
+    registry.DungeonServiceClient={module={session={profile_data={dungeon_data=raw}}}}
+    registry.DungeonServiceCore={module={TYPES={SHOP=1,SHRINE=7,OPEN_CHEST=6},ITEMS={tome={cost=100}},
+        sum_item_values=function(d,key) assert(d==raw and key=='shop_prices');calls+=1;return -.5 end}}
+    export.LevelData._dungeon={depth=8,choice_str='1'}
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    local s=a:observe(10);assert(s.dungeon.phase.offers[1].price==50 and calls==1)
+    registry.DungeonServiceCore.module.sum_item_values=function() return nil end
+    raw._resources.money=101;s=a:observe(11);assert(s.dungeon.phase.offers[1].price==nil)
+end)
+check('target-priority dispatch uses the observed model and reads its exact native field',function()
+    local a,_,cfg,ws,rs,_,_,tasks=world();cfg.autoTarget='first'
+    local tower=node('tower','Model',{}, {node('_stats','Folder',{player_id=12,uuid='unitA',id='bulma',upgrade=0,priority='last'})})
+    local wave=node('_wave_num','IntValue');wave.Value=1;ws.kids={node('_UNITS','Folder',{}, {tower}),wave}
+    local s=a:observe(10)
+    assert(s.units[1].priority=='last')
+    local remote=node('change_priority','RemoteFunction');function remote:InvokeServer(model,target) assert(model==tower and target=='first');return true end
+    rs.kids={node('endpoints','Folder',{}, {node('client_to_server','Folder',{}, {remote})})}
+    assert(not a:dispatch({kind='priority',key=tower,target='strongest'}))
+    assert(a:dispatch({kind='priority',key=tower,uuid='unitA',target='first'}));assert(coroutine.resume(tasks[1]))
+end)
+check('next Story identity comes only from an already-loaded progression export in actual Story',function()
+    local a,_,cfg,_,_,tasks,export,_,_,_,_,_,registry=combatFixture();cfg.autoNextStory=true
+    export.LevelData._is_actual_storymode=true
+    registry.ProgressionServiceCore={module={get_next_story_level=function(id) assert(id=='namek_level_1');return {id='namek_level_2'} end}}
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    assert(a:observe(10).nextStoryId=='namek_level_2')
+    export.LevelData._is_actual_storymode=false;assert(a:observe(11).nextStoryId==nil)
+end)
+check('old-job transport locks cannot block a verified new server but same-job locks survive',function()
+    local a,env=world();getfenv(factory).game.JobId='new-native-job'
+    env.K_AA_NETWORK_PENDING={jobId='old-native-job'}
+    env.K_AA_CLIENT_CACHE_PENDING={jobId='old-native-job'}
+    assert(not a:busy() and env.K_AA_NETWORK_PENDING==nil and env.K_AA_CLIENT_CACHE_PENDING==nil)
+    env.K_AA_NETWORK_PENDING={jobId='new-native-job'};assert(a:busy())
+    env.K_AA_NETWORK_PENDING={};assert(a:busy())
+end)
+check('known-own partial identity or position makes battlefield observation incomplete until replication finishes',function()
+    local a,_,_,ws=world();local wave=node('_wave_num','IntValue');wave.Value=1
+    local stats=node('_stats','Folder',{player_id=12,id='attacker'})
+    local tower=node('partial','Model',{}, {stats});ws.kids={node('_UNITS','Folder',{}, {tower}),wave}
+    local s=a:observe(10);assert(s.towerScan.own==1 and s.towerScan.missingIdentity==1 and not s.unitsComplete)
+    stats.attrs.uuid='u';s=a:observe(11)
+    assert(s.towerScan.missingPosition==1 and not s.unitsComplete)
+    local hitbox=node('_hitbox','BasePart');hitbox.Position={X=1,Y=2,Z=3};tower.kids[#tower.kids+1]=hitbox
+    s=a:observe(12);assert(s.unitsComplete and s.units[1].uuid=='u')
 end)
 print('All '..n..' adapter tests passed')

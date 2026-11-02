@@ -104,4 +104,20 @@ check('complete declared equipment is distinct from partial ownership coverage',
     local s=I.read(raw,12)
     assert(s.equippedComplete==true and s.equippedDeclared==2 and #s.roster==2 and s.rejected>0)
 end)
+check('named existing Dungeon exports are found without invoking getters',function()
+    local calls=0
+    local svc={session={profile_data={dungeon_data={_started=true}}}}
+    local core={TYPES={SHOP=1}}
+    local registry={DungeonServiceClient={module=svc},DungeonServiceCore={module=core}}
+    local names={'DungeonServiceClient','DungeonServiceCore'}
+    local found=I.named({{value={services=registry},source='Loader.cache'}},names)
+    assert(I.current(found.DungeonServiceClient)==svc and I.current(found.DungeonServiceCore)==core)
+    registry.DungeonServiceClient=nil;assert(I.current(found.DungeonServiceClient)==nil)
+    assert(calls==0)
+end)
+check('named export lookup is raw and bounded even with hostile metatables',function()
+    local calls=0
+    local value=setmetatable({},{__index=function() calls+=1;error('getter') end})
+    assert(next(I.named({{value=value,source='cache'}},{'DungeonServiceClient'}))==nil and calls==0)
+end)
 print('All '..n..' inventory tests passed')

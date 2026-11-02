@@ -1,6 +1,6 @@
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.1.0'
+C.version = '7.0.0'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -9,8 +9,17 @@ C.itemLabels = {SacredTreasure='Sacred Treasure',StarFruit='Star Fruit',StarFrui
 C.defaults = {goal='Acquire',targetTrait='Unique',targetGrade='SSS',reserve=0,maxRuns=1,
     maxSeconds=1200,upgrade=true,replay=false,replayFreeConfirmed=false,protocolConfirmed=false,
     routeConfirmed=false,traitCap=0,statCap=0,inventoryPath='',resourcePath='',cashPath='',
-    mode='Dungeon',logDisk=false,selectedUuid='',recordCosts='',trialSlot=4}
+    mode='Dungeon',logDisk=false,selectedUuid='',recordCosts='',trialSlot=4,
+    autoMethod='RoundRobin',autoDistance=50,autoGround=60,autoHill=80,autoFollow=false,
+    autoStartWaves=false,autoReturnLobby=false,autoNextStory=false,autoTarget='GameDefault',autoUpgradeMethod='LowestLevel',
+    dungeonPreset='Safe',dungeonShopCap=0,dungeonConsent=false,dungeonOpenChests=false}
 function C.finite(x) return type(x)=='number' and x==x and math.abs(x)<1e12 end
+function C.teleportReplacement(old,ticket,userId,universeId,jobId)
+    return type(old)=='table' and type(old.instanceJob)=='string' and type(jobId)=='string' and jobId~=''
+        and old.instanceJob~=jobId and type(ticket)=='table' and ticket.jobId==jobId
+        and ticket.userId==userId and ticket.universeId==universeId and type(ticket.nonce)=='string'
+        and #ticket.nonce>0 and #ticket.nonce<=200
+end
 function C.deficit(have,need)
     if not C.finite(have) then return nil end
     return math.max(0,need-have)
@@ -68,7 +77,8 @@ function C.sanitize(raw)
     for k,v in pairs(cfg) do
         if type(raw[k])==type(v) then cfg[k]=raw[k] end
     end
-    for k,limit in pairs({reserve=1000000,maxRuns=100,maxSeconds=7200,traitCap=1000,statCap=1000}) do
+    for k,limit in pairs({reserve=1000000,maxRuns=100,maxSeconds=7200,traitCap=1000,statCap=1000,
+        autoDistance=100,autoGround=100,autoHill=100,dungeonShopCap=100000}) do
         if not C.finite(cfg[k]) then cfg[k]=C.defaults[k] end
         cfg[k]=math.clamp(math.floor(cfg[k]),0,limit)
     end
@@ -80,8 +90,13 @@ function C.sanitize(raw)
     if not table.find({'Unique','Divine','Celestial','Reaper','Godspeed','Sniper'},cfg.targetTrait) then cfg.targetTrait='Unique' end
     for _,key in ipairs({'inventoryPath','resourcePath','cashPath','recordCosts'}) do cfg[key]=cfg[key]:sub(1,200) end
     if not table.find({'Dungeon','Story','Infinite','Challenge','Portal','Raid','Event','Legend'},cfg.mode) then cfg.mode='Dungeon' end
+    if not table.find({'RoundRobin','Cheapest'},cfg.autoMethod) then cfg.autoMethod='RoundRobin' end
+    if not table.find({'LowestLevel','Cheapest'},cfg.autoUpgradeMethod) then cfg.autoUpgradeMethod='LowestLevel' end
+    if not table.find({'GameDefault','first'},cfg.autoTarget) then cfg.autoTarget='GameDefault' end
+    if not table.find({'Safe','Rewards'},cfg.dungeonPreset) then cfg.dungeonPreset='Safe' end
     -- Spending/arming/protocol confirmations are session-specific and never restored.
     cfg.routeConfirmed=false;cfg.protocolConfirmed=false;cfg.replayFreeConfirmed=false
+    cfg.autoFollow=false;cfg.dungeonConsent=false;cfg.dungeonOpenChests=false
     return cfg
 end
 function C.outcome(texts)
@@ -118,6 +133,7 @@ function C.profileReadiness(s,p,cfg)
     need(s.stageVerified==true,'Stage identity not observed')
     need(s.transportBlocked~=true,'An earlier remote request is still outstanding')
     need(s.mutationFence~=true,'Prior mutation lacks exact feedback in this round; enter a fresh match')
+    need(s.externalControllerActive~=true,'Close Zeno before running this controller')
     need(C.finite(s.now) and C.finite(s.rosterAt) and s.now>=s.rosterAt and s.now-s.rosterAt<=15,'Fresh equipped UUIDs unavailable')
     need(C.finite(s.cash),'Live match Yen unknown')
     if type(p)~='table' or type(p.entries)~='table' then

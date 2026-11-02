@@ -1,11 +1,13 @@
 -- Native observations plus an explicit, experimental cached-client reader.
 local makeInventory=require('./inventory')
+local makeDungeon=require('./dungeon')
 return function(C, env, cfg, log)
     local Players=game:GetService('Players')
     local RS=game:GetService('ReplicatedStorage')
     local WS=game:GetService('Workspace')
     local LP=Players.LocalPlayer
     local inventoryParser=makeInventory(C)
+    local dungeonParser=makeDungeon(C)
     local A={alive=true,models={},owned={},roster={},resources={},ownedAt=nil,rosterAt=nil,
         nextInventory=0,run=0,lastWave=0,lastFolder=nil,stage=nil,mode=nil,stageSource='unknown',
         path={},previous=setmetatable({},{__mode='k'}),nextMapTry=0,failures={},replies={}}
@@ -211,6 +213,7 @@ return function(C, env, cfg, log)
     local function record(node,scope)
         local st=child(node,'_stats') or child(node,'stats') or node
         local u={uuid=stringValue(st,{'uuid','unique_id'}),id=stringValue(st,{'unit_id','unitId','id'}),
+            priority=stringValue(st,{'priority'}),
             trait=stringValue(st,{'trait','trait_name'}),statScope=scope,
             damageGrade=stringValue(st,{'damage_grade','damageGrade'}),
             spaGrade=stringValue(st,{'spa_grade','spaGrade'}),
@@ -284,11 +287,13 @@ return function(C, env, cfg, log)
     end
     -- Manual only: a single loaded-module snapshot and a bounded read of known
     -- Loader closure upvalues. No service getter/initializer is ever called.
-    function A:startClientCache()
+    function A:startClientCache(includeDungeon)
         if not self.alive then return false,'Reader closed' end
         if self:busy() then return false,'Another request is still pending' end
         if self.clientService then
-            if self.definitions or self.combatAttempted then
+            local dungeonRetry=includeDungeon==true and not self.dungeonAttempted
+            if dungeonRetry then self.dungeonAttempted=true end
+            if not dungeonRetry and (self.definitions or self.combatAttempted) then
                 self.nextInventory=0;self.cacheDone=true;return true
             end
             -- One additional explicit read if static data loaded after the
@@ -308,7 +313,7 @@ return function(C, env, cfg, log)
             self.cacheReport='CLIENT CACHE READER: observed Loader module missing'
             self.cacheDone=true;return false,self.cacheReport
         end
-        local mark={at=os.clock(),kind='client-cache'}
+        local mark={at=os.clock(),kind='client-cache',jobId=game.JobId}
         env.K_AA_CLIENT_CACHE_PENDING=mark;self.cacheDone=false
         self.cacheReport='CLIENT CACHE READER: manual read pending; no initializer/getter calls'
         task.spawn(function()
@@ -337,7 +342,7 @@ return function(C, env, cfg, log)
                 end
                 if not valid() then error('Read cancelled/expired',0) end
                 local roots={{value=loader,source='Loader export'}}
-                for _,field in ipairs({'init','load_client_service'}) do
+                for _,field in ipairs({'init','load_client_service','load_core_service'}) do
                     local fn=rawget(loader,field)
                     local readCount=0
                     if type(fn)=='function' then
@@ -359,6 +364,7 @@ return function(C, env, cfg, log)
                 local match=inventoryParser.find(roots,LP.UserId)
                 if not match then error('No supported existing local service session; no getter fallback',0) end
                 match.loader=loader
+                match.dungeonBindings=inventoryParser.named(roots,{'DungeonServiceClient','DungeonServiceCore','ProgressionServiceCore'})
                 -- Only the exact, reported-loaded static Units export. Never
                 -- call load_data or recurse into the numeric child modules.
                 local unitsModule=child(child(child(RS,'src'),'Data'),'Units')
@@ -383,6 +389,7 @@ return function(C, env, cfg, log)
                 self.clientBinding={registry=found.registry,name=found.name}
                 self.clientService=found.service;self.clientSource=found.source;self.nextInventory=0
                 self.loaderExport=found.loader;self.definitions=found.definitions
+                self.dungeonBindings=found.dungeonBindings
                 self.cacheReport='CLIENT CACHE READER: existing session found (experimental)\nCache source: '..found.source..
                     '\nInitial read recognized units='..#found.snapshot.owned..' equipped='..#found.snapshot.roster..
                     '; incomplete ownership is not absence. Explicit getter/initializer calls: 0.'
@@ -597,12 +604,24 @@ return function(C, env, cfg, log)
         if self.resultConnection then pcall(function() self.resultConnection:Disconnect() end) end
         self.resultConnection=nil;self.resultWatchState='off'
     end
-    function A:busy() return env.K_AA_NETWORK_PENDING~=nil or env.K_AA_CLIENT_CACHE_PENDING~=nil end
+    function A:busy()
+        -- Some executors retain globals across teleports. An old server's
+        -- outstanding call cannot mutate this verified different server.
+        local job=game.JobId
+        if type(job)=='string' and job~='' then
+            for _,key in ipairs({'K_AA_NETWORK_PENDING','K_AA_CLIENT_CACHE_PENDING'}) do
+                local mark=env[key]
+                if type(mark)=='table' and type(mark.jobId)=='string' and mark.jobId~='' and mark.jobId~=job then env[key]=nil end
+            end
+        end
+        return env.K_AA_NETWORK_PENDING~=nil or env.K_AA_CLIENT_CACHE_PENDING~=nil
+    end
     local function acceptLevel(self,data,source)
         if type(data)~='table' then return false end
         local id=rawget(data,'id') or rawget(data,'level_id')
         if (type(id)~='string' and type(id)~='number') or tostring(id)=='' then return false end
         self.stage=tostring(id):sub(1,100);self.stageSource=source
+        self.levelData=data
         local name=rawget(data,'name') or rawget(data,'level_name')
         self.stageName=type(name)=='string' and name:sub(1,100) or self.stage
         local mode=rawget(data,'mode') or rawget(data,'gamemode') or rawget(data,'_gamemode')
@@ -617,6 +636,7 @@ return function(C, env, cfg, log)
     end
     function A:issue(kind,args,geometry)
         if not self.alive or self:busy() then return false,'Transport busy/closed' end
+        if kind~='map' and type(env.ZenoHub)=='table' then return false,'Close Zeno before native automation' end
         if kind~='map' then
             local previous=self.roundToken;local current=syncRound(self)
             if previous and current~=previous then return false,'Native round changed; refresh before sending' end
@@ -624,11 +644,13 @@ return function(C, env, cfg, log)
         end
         local remote
         if kind=='map' then remote=child(child(WS,'_MAP_CONFIG'),'GetLevelData')
-        else remote=self:remote(({place='spawn_unit',upgrade='upgrade_unit_ingame',replay='set_game_finished_vote'})[kind]) end
+        elseif kind=='dungeon' then remote=self:remote(geometry.endpoint)
+        else remote=self:remote(({place='spawn_unit',upgrade='upgrade_unit_ingame',replay='set_game_finished_vote',
+            start='vote_start',lobby='teleport_back_to_lobby',priority='change_priority',next='set_game_finished_vote'})[kind]) end
         if not remote or not (remote:IsA('RemoteFunction') or remote:IsA('RemoteEvent')) then
             return false,'Required observed endpoint unavailable'
         end
-        local mark={kind=kind,at=os.clock(),run=self.run}
+        local mark={kind=kind,at=os.clock(),run=self.run,jobId=game.JobId}
         if kind~='map' then
             mark.feedbackToken={};mark.feedbackState='awaiting exact readback'
             env.K_AA_MUTATION_FEEDBACK={roundToken=self.roundToken,token=mark.feedbackToken,kind=kind}
@@ -710,7 +732,7 @@ return function(C, env, cfg, log)
             or (level and self.lastLevelData and level~=self.lastLevelData)
             or (started==false and self.lastStarted==true)
             or (finished==false and self.lastFinished==true) then
-            self.run+=1;self.lastFolder=folder;self.stage=nil;self.mode=nil
+            self.run+=1;self.lastFolder=folder;self.stage=nil;self.mode=nil;self.levelData=nil
             self.stageSource='unknown';self.stageName=nil;self.resultHidden=false;self.mapRequested=false
             self.staleLevelData=self.lastLevelData;self.mapAttempts=0;self.nextMapTry=0;self.mapStatus='Not read yet'
             self.mapDeadline=now+30
@@ -735,6 +757,11 @@ return function(C, env, cfg, log)
             local def=type(self.definitions)=='table' and rawget(self.definitions,u.id) or nil
             if type(def)~='table' then return end
             local farm=rawget(def,'farm_amount');local damage=rawget(def,'damage');local spa=rawget(def,'attack_cooldown')
+            local cap=rawget(def,'spawn_cap')
+            if C.finite(cap) and cap>=1 and cap<=100 and cap%1==0 then u.spawnCap=cap end
+            if C.hasTrait(u,'Unique') then u.spawnCap=1 end
+            local range=rawget(def,'range')
+            if C.finite(range) and range>0 and range<=1000 then u.planningRange=range end
             if C.finite(farm) and farm>0 then u.role='farm';u.roleSource='Units.farm_amount'
             elseif rawget(def,'_show_as_buff_unit')==true then u.role='buff';u.roleSource='Units buff flag'
             elseif (C.finite(u.damage) and u.damage>0 and C.finite(u.spa) and u.spa>0)
@@ -787,11 +814,12 @@ return function(C, env, cfg, log)
                     local u=record(m,'battle')
                     if u then
                         costs(u);u.key=m;u.pos=point(m);self.models[m]=m;units[#units+1]=u
-                        if not u.pos then scan.missingPosition+=1 end
+                        if C.distance(u.pos,u.pos)~=0 then scan.missingPosition+=1 end
                     else scan.missingIdentity+=1 end
                 end
             end
         end
+        if scan.missingIdentity>0 or scan.missingPosition>0 then unitsComplete=false end
         local owned=table.clone(self.owned);local known={}
         for _,u in ipairs(owned) do known[u.uuid]=true end
         for _,u in ipairs(units) do if not known[u.uuid] then owned[#owned+1]=u;known[u.uuid]=true end end
@@ -843,6 +871,62 @@ return function(C, env, cfg, log)
                 outcome='unknown';outcomeSource='Conflicting result evidence'
             else outcome=resultEvent.outcome;outcomeSource='game_finished.victory + GameFinished' end
         end
+        local dungeon={valid=false,reason='Named Dungeon cache exports unavailable'}
+        local bindings=self.dungeonBindings
+        if type(bindings)=='table' then
+            local service=inventoryParser.current(bindings.DungeonServiceClient)
+            local core=inventoryParser.current(bindings.DungeonServiceCore)
+            local validOwner=true
+            for _,root in pairs({service,type(service)=='table' and rawget(service,'session')}) do
+                if type(root)=='table' then
+                    local profile=rawget(root,'profile_data')
+                    for _,ownerSource in pairs({root,profile}) do
+                        if type(ownerSource)=='table' then
+                            for _,key in ipairs({'user_id','player_id','UserId'}) do
+                                local id=rawget(ownerSource,key)
+                                if id~=nil and ((type(id)~='number' and type(id)~='string') or tonumber(id)~=LP.UserId) then validOwner=false end
+                            end
+                        end
+                    end
+                end
+            end
+            if validOwner then dungeon=dungeonParser.snapshot(service,core,self.levelData)
+            else dungeon={valid=false,reason='Dungeon cache owner mismatch'} end
+            if dungeon.valid and dungeon.phase.kind=='Shop' and cfg.dungeonShopCap>0 and type(core)=='table' then
+                local helper=rawget(core,'sum_item_values')
+                local session=type(service)=='table' and rawget(service,'session')
+                local profile=type(session)=='table' and rawget(session,'profile_data')
+                local raw=type(profile)=='table' and rawget(profile,'dungeon_data')
+                -- Read-only calculation from the already-loaded core export,
+                -- exactly once per observed shop state. Never a service getter.
+                if self.shopQuoteToken~=dungeon.stateToken then
+                    self.shopQuoteToken=dungeon.stateToken;self.shopQuoteScale=nil
+                    if type(helper)=='function' then
+                        local ok,value=pcall(helper,raw,'shop_prices')
+                        if ok and C.finite(value) and value>=-1 and value<=100 then self.shopQuoteScale=value+1 end
+                    end
+                end
+                if self.shopQuoteScale then
+                    for _,offer in ipairs(dungeon.phase.offers) do
+                        if offer.price==nil and C.finite(offer.baseCost) and offer.baseCost>=0 then
+                            offer.price=math.ceil(offer.baseCost*self.shopQuoteScale)
+                            offer.priceSource='Loaded Dungeon core shop_prices calculation × item cost'
+                        end
+                    end
+                end
+            end
+        end
+        local nextStoryId
+        if cfg.autoNextStory==true and self.mode=='Story' and type(self.levelData)=='table'
+            and rawget(self.levelData,'_is_actual_storymode')==true then
+            local core=bindings and inventoryParser.current(bindings.ProgressionServiceCore)
+            local fn=type(core)=='table' and rawget(core,'get_next_story_level')
+            if type(fn)=='function' then
+                local ok,nextLevel=pcall(fn,self.stage)
+                local id=ok and (type(nextLevel)=='table' and rawget(nextLevel,'id') or nextLevel)
+                if type(id)=='string' and #id>0 and #id<=100 and id~=self.stage then nextStoryId=id end
+            end
+        end
         local s={now=now,run=tostring(self.run),inMatch=folder~=nil and waveNode~=nil and not lobby,context=context,
             started=scalar(WS,{'_waves_started'})==true or w>0,stage=self.stage or 'unknown',
             stageName=self.stageName or 'unknown',stageVerified=self.stage~=nil,stageSource=self.stageSource,
@@ -850,6 +934,11 @@ return function(C, env, cfg, log)
             placeId=game.PlaceId,wave=w,cash=money,cashSource=moneySource,units=units,unitsComplete=unitsComplete,
             towerScan=scan,
             roundToken=self.roundToken,mutationFence=self:mutationFenced(),
+            externalControllerActive=type(env.ZenoHub)=='table',jobId=game.JobId,
+            observedLobby=lobby==true,
+            nextStoryId=nextStoryId,
+            dungeon=dungeon,dungeonAt=dungeon.valid and now or nil,
+            voteStartFinished=scalar(child(child(WS,'_DATA'),'VoteStart'),{'VotingFinished'}),
             wallet=wallet,walletSources=walletSources,rawResource=rawResource,
             owned=owned,ownedAt=#owned>0 and now or self.ownedAt,roster=roster,rosterAt=self.rosterAt,
             rosterComplete=self.rosterComplete,equippedDeclared=self.equippedDeclared,
@@ -879,7 +968,36 @@ return function(C, env, cfg, log)
         elseif action.kind=='upgrade' and self.models[action.key] then
             local model=self.models[action.key];local u=record(model,'battle')
             return self:issue('upgrade',{model},{uuid=action.uuid or (u and u.uuid)})
-        elseif action.kind=='replay' then return self:issue('replay',{'replay'}) end
+        elseif action.kind=='replay' then return self:issue('replay',{'replay'})
+        elseif action.kind=='start' then
+            if cfg.autoStartWaves~=true then return false,'Auto start waves permission is OFF' end
+            return self:issue('start',{})
+        elseif action.kind=='lobby' then
+            if cfg.autoReturnLobby~=true then return false,'Automatic lobby-return permission is OFF' end
+            return self:issue('lobby',{})
+        elseif action.kind=='next' then
+            if cfg.autoNextStory~=true then return false,'Next Story permission is OFF' end
+            return self:issue('next',{'next_story'})
+        elseif action.kind=='priority' then
+            if cfg.autoTarget~='first' or action.target~='first' or not self.models[action.key] then
+                return false,'Unsupported target setting or unknown own model'
+            end
+            return self:issue('priority',{self.models[action.key],'first'},{uuid=action.uuid})
+        elseif action.kind=='dungeon' then
+            if cfg.dungeonConsent~=true then return false,'Dungeon session not explicitly armed' end
+            local name,args=action.name,action.args
+            if type(args)~='table' then return false,'Dungeon payload missing' end
+            local allowed=false
+            if name=='dungeon_enter_room' then allowed=#args==1 and (args[1]=='1' or args[1]=='2' or args[1]=='3')
+            elseif name=='dungeon_continue_shop' then allowed=#args==0
+            elseif name=='dungeon_open_chest' then
+                allowed=cfg.dungeonOpenChests==true and (#args==0 or (#args==1 and args[1]==true))
+            elseif name=='dungeon_buy_shop' then
+                allowed=cfg.dungeonShopCap>0 and #args==1 and C.finite(args[1]) and args[1]>=1 and args[1]<=32 and args[1]%1==0
+            end
+            if not allowed then return false,'Unsupported Dungeon action, payload or spending permission' end
+            return self:issue('dungeon',args,{endpoint=name})
+        end
         return false,'Unsupported action'
     end
     function A:combatReport(s)
@@ -894,6 +1012,8 @@ return function(C, env, cfg, log)
             'Equipment complete='..fmt(s.rosterComplete)..' | declared slots='..fmt(s.equippedDeclared),
             'Map read='..fmt(self.mapStatus)..' | transport pending='..fmt(s.transportBlocked),
             'Unresolved mutation fence='..fmt(s.mutationFence)..' (survives reload within this executor)',
+            'External Zeno loaded='..fmt(s.externalControllerActive)..' | native mutations blocked while loaded',
+            'Dungeon cache='..fmt(s.dungeon and s.dungeon.valid)..' | reason='..fmt(s.dungeon and s.dungeon.reason),
             'Outcome='..fmt(s.outcome)..' | source='..fmt(s.outcomeSource)..' | result observer='..fmt(self.resultWatchState)..
                 ' | event='..fmt(self.resultEventReport),
             'Tower scan: examined='..fmt(scan.examined)..' / '..fmt(scan.total)..' | own='..fmt(scan.own)..

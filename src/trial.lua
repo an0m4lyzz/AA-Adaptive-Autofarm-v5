@@ -3,6 +3,7 @@ return function(C,cfg,log)
     local T={state='IDLE',reason='No supervised action attempted',pending=nil,placements=0,upgrades=0,
         attemptRun=nil,attempted={}}
     function T:quote(kind,s,p)
+        if s.externalControllerActive then return nil,'Close Zeno before using a native action test' end
         if kind~='place' and kind~='upgrade' then return nil,'Unsupported test action' end
         if self.pending or s.transportBlocked then return nil,'A request/test is still pending' end
         if s.mutationFence then return nil,'Prior mutation lacks exact feedback; enter a fresh match' end

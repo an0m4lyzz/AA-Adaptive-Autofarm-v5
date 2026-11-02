@@ -1,6 +1,6 @@
-# [K] Anime Adventures — Rukia progression v6
+# [K] Anime Adventures — Rukia progression v7
 
-**v6.1.0: recorded Story team controller, offline-tested. User reports verify scripted Bulma placement and upgrades; complete-team combat and replay remain EXPERIMENTAL. Unattended Rukia progression is NOT READY.**
+**v7.0.0: native Smart Auto, existing-run Dungeon flow and opt-in teleport following. Offline tested; new Roblox/Delta behavior remains EXPERIMENTAL. Complete Rukia progression is not live verified.**
 
 The official experience now displays Update 21 (checked November 1, 2026, Manila date). Current Rukia availability, recipe, rates and protocols could not be verified. Read the [research and progression plan](docs/RUKIA-RESEARCH.md), [audit](docs/AUDIT.md) and [testing guide](TESTING.md).
 
@@ -10,48 +10,45 @@ The official experience now displays Update 21 (checked November 1, 2026, Manila
 loadstring(game:HttpGet("https://raw.githubusercontent.com/an0m4lyzz/AA-Adaptive-Autofarm-v5/main/main.lua"))()
 ```
 
-main.lua bundles local src modules; there is no secondary HTTP loader or external GUI library. Old v5 source and instructions are archived intact in legacy/ and are not loaded. Existing v5 settings remain untouched; the compatible upgrade preference migrates on the first v6 load. Old macros need re-recording.
+main.lua bundles local src modules and uses no external GUI library or Zeno runtime. Explicit teleport following queues only this same entrypoint. Old v5 source and instructions are archived intact in legacy/ and are not loaded. Existing v5 settings remain untouched; the compatible upgrade preference migrates on the first v6 load. Old macros need re-recording.
 
-## Feature status
+## Current features
 
-| Feature | Status | Boundary |
-|---|---|---|
-| Rukia identity and selected-copy goals | Offline-tested logic | Historical secret IDs rukia_2 / rukia_2_evo; old rukia excluded. Live schema unknown. |
-| Inventory, traits, stats, material counts | Experimental observer | Player-replicated Instances or explicit client-cache reader; missing data stays unknown. Partial scans never prove absence. |
-| Progression checklist | Implemented, historical data | Acquisition → trait → stats → evolution. No fabricated pity or live price. |
-| Seven-tab dark touch GUI | Implemented; live untested | RUKIA, TRAITS, STATS, EVOLUTION, FARM, REPORTS, SETTINGS. |
-| Recorded placements/upgrades | Experimental | Exact equipped identity, stage, costs, position and new-model/upgrade feedback required. |
-| One-action Story tests | Bulma placement and upgrades observed in user reports | Explicit click, visible unit/slot/price, one request and bounded readback. Other units remain unverified. |
-| Equipped-team Story Auto | Implemented; experimental, live unverified | Every declared equipped slot needs a recorded position; partial captures auto-save. Affordable placement, then observed upgrades, one action at a time. |
-| Path observation | Experimental observer | Bounded visible movement samples. Active placement uses recorded coordinates. |
-| Results and reports | Offline-tested logic | Exact visible labels or scoped boolean result event plus current finished marker; ambiguity stays unknown. Resource deltas are not attributed drops. |
-| Replay | Experimental, restricted | Team supports Story only; legacy Rukia controller also permits observed Infinite/Challenge. Stage-specific no-cost confirmation, opt-in and run cap required. |
-| Summons, trait/stat rerolls, evolution | **Unavailable** | No verified current protocol, price or inventory transaction. Budget inputs are planning limits. |
-| Dungeon branches, keys, shops, chests | **Unavailable** | Manual play required; no verified adapter. |
-| Random event towers, target priority, abilities, auto equip | **Unavailable** | No current verified mode/action adapter. |
-| Best current build / secret availability | **Unverified** | Historical candidates and recipe only. |
+| Feature | Status / boundary |
+|---|---|
+| Smart Auto placement/upgrades | Experimental native implementation; observed LANES/terrain, equipped identities/caps/prices and exact readback |
+| Target priority / opening | Optional target-first, balanced opening, support-space reservation, lowest-level or cheapest upgrades; heuristics, not proven optimal |
+| Manual-entry combat modes | Story, Infinite, Challenge, Raid, Legend, Portal, Dungeon when mode/data are supported |
+| Story transitions | Opt-in typed start voting, confirmed free replay, verified known next Story and lobby return; caps apply |
+| Existing Dungeon run | Experimental safe/reward room priorities, shrine skipping, known-price capped shops and explicit final chests |
+| GUI after teleport | Opt-in queue/file-based following; account/universe bound, expiring and revocable |
+| Automatic continuation | Only a requested, verified destination can resume within original limits; not an arbitrary new stage |
+| Rukia/inventory/build checklist | Existing experimental observations; historical recipe/trait guidance remains labeled |
+| New Dungeon keys / premium mutations | Unavailable; no automatic new-run entry, summons, rerolls, evolution or material purchases |
+| Event cards / abilities / general lobby joiners | Unavailable until native behavior and readback are established |
 
-## Mobile protections
+The [full Zeno menu audit](docs/ZENO-MENU-AUDIT.md) covers every source menu. [Adaptation details](docs/ZENO-ADAPTATION.md) distinguish implementation, evidence and remaining limits. This is original code using referenced interfaces, not a copied or automatically loaded hub.
 
-Full Auto is OFF after every load. Target/mode/profile/settings changes disarm it. Close disconnects all GUI/input listeners; minimize keeps the observer alive.
+## First v7 test
 
-No hooks, GC enumeration, full PlayerGui traversal, speculative remote-name loops or automatic keys/summons. One 0.8-second observer loop, inventory every four seconds, UI every two seconds. Path ≤80 samples; log ≤240 lines; report ≤64 KiB. Tower scans above 120 children block mutation; incomplete result scans cannot confirm victory.
+1. Restart Roblox so Zeno and its queued reload are gone. Remove Zeno autoexec if you installed it. Run only this project's unchanged loadstring; confirm **7.0.0**.
+2. In FARM tap **READ GAME DATA + COPY REPORT**, then **APPLY CLEAR-FIRST SETUP**. Compare observed equipped slots and costs with the game.
+3. Enable **KEEP UI + AUTHORIZED AUTO AFTER TELEPORT** if desired. Queue and file support must succeed; this does not arm combat yet.
+4. Enter a free Story stage or an already-started Dungeon manually. Read game data inside that match if not connected, then tap **START SMART AUTO**. No manual placement profile is required.
+5. For Dungeon, grant **ALLOW OPENING FINAL DUNGEON CHESTS** before arming if desired. Shop budget defaults 0; new key-consuming starts always remain manual. A settings change pauses Auto, so set options before START.
+6. Supervise the first run. On a result/blocker use **COPY SMART AUTO REPORT**. Defeat, unknown results, incomplete observations and unconfirmed actions stop; there is no blind retry.
 
-One outstanding remote request, bounded feedback wait, no blind retries. A pending request remains globally locked across replacement until it returns; stopping cannot undo a request already sent. A separate unresolved-action lock survives close/reload in the same executor even after the RPC returns. Exact tower feedback or an observed native round reset clears it; a local run-counter or map-data change cannot. A full Roblox process restart loses executor memory. An unclean-session marker reports possible crash/teleport/process exit without claiming which occurred.
+Clear-first setup uses a single run and replay OFF. For repeated Story clears, open Advanced, confirm the exact stage replay is free, enable replay and set a finite run cap in Settings. NEXT STORY requires an exposed next-level identity and the same run cap. Arbitrary manual stage changes reload the UI but do not automatically authorize spending.
 
-Restart Roblox after older hooked builds. These protections do not prove Android crash freedom.
+## Mobile and spending protections
 
-## First test
+No startup hooks, GC enumeration, full PlayerGui scans, third-party source loads or speculative remote loops. One 0.8-second observer, inventory every 4 seconds, bounded lane/geometry/phase reads, tracked listeners and one mutation in flight. Reports/logs remain bounded. Presence of Zeno blocks native mutations.
 
-The v6.0.7 report confirms a new exact Bulma at the recorded position after the script request, RPC true and cash 900→100. The request used observed terrain Y91.806 instead of saved model-centre Y93.086. The next test is the recorded team, not another Bulma-only diagnostic.
+Exact server-observable tower/level/priority/room/resource changes confirm actions; RPC true does not. A same-server unresolved action stays fenced across replacement, and a real round reset is required to release uncertainty. Following is explicitly enabled, has a maximum 7200-second permission window and preserves original time/run/shop limits across authorized transitions. Close revokes queued continuation; a failed durable write is reported as uncertainty. Already-sent requests cannot be cancelled.
 
-1. Load the unchanged entry point inside the same free Story stage and confirm **6.1.0**. Tap FARM → **READ MATCH DATA + COPY COMBAT REPORT** once.
-2. Manually place at least one copy of every equipped unit in suitable spots, then tap **RECORD + SAVE TEAM POSITIONS**. Partial captures save automatically; repeat as more slots are placed. Require **Recorded slots 6 / 6** for the reported team and a successful save.
-3. Enter a fresh copy of the same Story stage. Load again, read match data once and start waves. Keep replay OFF and max runs 1.
-4. Tap **CHECK TEAM READINESS**, then **START TEAM AUTO**. Supervise the run; the controller uses the recorded spots, current prices and Yen reserve.
-5. Use **COPY TEAM REPORT** after a result or blocker. Unknown feedback stops spending without retrying.
+Preferences save locally, but ordinary injection never arms an engine. [TESTING.md](TESTING.md) explains current evidence and [VALIDATION.md](docs/VALIDATION.md) records offline checks. Android stability and complete Rukia farming remain unverified.
 
-Bulma does not need selling. Multiple copies require additional recorded spots, up to 24 targets; one recorded copy per equipped slot is the minimum. Changed equipment, prices, modifiers or stage can require recapture. See [TESTING.md](TESTING.md). Story automation does not establish a Rukia reward route; Dungeon keys/chests remain manual and unverified.
+## Earlier v6 releases
 
 ### v6.0.1: missing data-path diagnostic
 

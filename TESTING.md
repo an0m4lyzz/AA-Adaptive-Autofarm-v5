@@ -6,22 +6,22 @@ Restart Roblox after older injections. Execute the unchanged loadstring once in 
 
 Only after a stable observer test, try one re-execution: the old GUI must disappear and one new GUI remain. Closing must stop updates and dragging. If it crashes before the GUI, stop repeated injection; offline syntax tests cannot diagnose that crash.
 
-## Current test: equipped Story team (v6.1.0)
+## Current test: native Smart Auto v7.0.0
 
-The user's v6.0.7 report observes the exact scripted Bulma placement with RPC true, cash 900→100 and a new matching own tower. Earlier reports observe scripted upgrades. Other units, full clears and replay still need live validation.
+1. Restart Roblox to remove Zeno's old loops/queued loader. Disable its autoexec file if present. Use only the unchanged project loadstring and confirm **7.0.0**.
+2. Join a free Story map first. FARM → READ GAME DATA + COPY REPORT; compare actual mode, equipped identities, deployment prices and caps. Unknown data is a blocker.
+3. APPLY CLEAR-FIRST SETUP. This saves balanced placement, lowest-level upgrades, target-first when exposed and automatic start voting; it leaves one run, replay OFF, no shop spending and no final-chest permission.
+4. Optionally enable KEEP UI + AUTHORIZED AUTO AFTER TELEPORT. Require success; lack of queue/file capability makes following unavailable. Ordinary load is still unarmed.
+5. START SMART AUTO. It proposes spots from actual _BASES.pve.LANES and terrain, using bounded unit/road/bounds checks; no recorded profile is required. Inspect placement, costs and upgrades against the game. Do not make simultaneous manual changes during a pending action.
+6. Confirm a real clear/result. COPY SMART AUTO REPORT after a blocker or result; it includes native controller, Dungeon, following and transport state. An eight-second unconfirmed combat action stops with no retry.
+7. Test following by changing Story/lobby manually: one GUI should reload, with Auto OFF on an unrequested destination. Then test only one explicitly requested next/replay transition with maxRuns2. Exact destination, cleared results/towers and original limits must be retained. Defeat/unknown result must stop, not replay.
+8. For an already-started Dungeon, read data inside the current room. Select Safe, leave shop budget0 initially, and separately enable final chests if wanted. Set all options before arming, because changing settings pauses Auto. START SMART AUTO should finish combat, wait for the correct post-win phase and enter only a verified forward room. New key-consuming starts and shrine acceptance remain manual/unavailable.
 
-1. Join the same free Story stage, run the unchanged loadstring and confirm **6.1.0**. Tap FARM → **READ MATCH DATA + COPY COMBAT REPORT** once. Compare all six current slots and prices with the game.
-2. Start waves and manually place at least one copy of every equipped unit where you want it. Tap **RECORD + SAVE TEAM POSITIONS**. You may record partial teams as money arrives; each compatible capture merges and saves. The current captured copies of a unit replace that unit's previous recorded group, so include all copies you intend to keep. Require **Recorded slots 6 / 6** and a saved status before leaving.
-3. Enter a fresh copy of the same Story stage, load again and read match data. The saved team restores, but Auto remains OFF. Start waves; leave replay OFF, max runs 1 and a short session timeout. Do not sell Bulma.
-4. Tap **CHECK TEAM READINESS**, then **START TEAM AUTO**. An affordable recorded combat unit is preferred; otherwise one farm may open while the controller saves for combat. It fills the recorded team before upgrading by observed level and affordable price. This is a deterministic baseline, not a proven optimal strategy.
-5. Observe exact placement/upgrade feedback without making simultaneous manual changes. A rejected request, ambiguous readback or eight-second timeout stops automation. Missing upgrade data stops after a bounded wait rather than claiming maximum level.
-6. Tap **COPY TEAM REPORT** after the run or blocker. A team stop also attempts to copy it automatically. Verify its outcome against the actual game. Keep replay OFF until a supervised clear and result detection work.
+Current native manual-entry combat supports Story, Infinite, Challenge, Raid, Legend, Portal and Dungeon when observed mode/schema/path are available. Only Story can automatically replay/advance; portal/paid-mode entry never follows from a completed match. Events/cards, abilities and general lobby joiners remain unavailable. Every new mode needs its own supervised live test.
 
-Every declared equipped slot must resolve from the cache and have a matching profile target. Partial/missing/conflicting equipped records block arming even if the parsed survivors all have recorded positions. A tower cannot satisfy two targets; same-unit recorded spots within three studs are rejected as ambiguous. Profile limit 24; incomplete tower scans, unsupported terrain, changed prices/modifiers/stage and stale equipment also block.
+Check specific failure cases: partially loaded own tower blocks spending; a non-target model cannot confirm placement; unknown next price is not maximum level; support/farm footprint uses planning metadata without changing stats; results cannot reuse stale Victory; wrong native Dungeon depth/choice cannot resume; stopped/expired follow marker prevents queued reload. Same-job reload deduplicates the observer, while a genuine new job must replenish the consumed queue. Closing must revoke following durably, with any write failure clearly reported.
 
-The optional exact game_finished listener starts only when Team Auto arms and disconnects on stop/close. A raw boolean victory must belong to the current run and agree with its finished marker; conflicting or stale evidence stays unknown. A replay must clear the result and recorded towers and show both a changed run and actual native round identity before spending again. Team replay is Story-only, opt-in, stage-confirmed free and capped.
-
-Stopping cannot undo a sent request. An unresolved-action fence survives script close/reload in the same executor after the RPC returns. Only exact controller readback or an actual native reset releases it; reloading, local run counters and newly arriving map metadata do not. Enter a fresh match after unconfirmed feedback. This fence is in memory and does not survive a full Roblox process restart.
+The user's earlier reports verify Bulma's scripted placement/upgrades and Zeno's displayed status, not v7 clears or Rukia drops. Full source/menu mapping and caveats are in docs/ZENO-ADAPTATION.md. The following v6 sections are historical diagnostic procedures.
 
 ## Earlier placement-boundary test (v6.0.7)
 

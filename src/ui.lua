@@ -62,6 +62,10 @@ return function(app)
         BackgroundTransparency=1,TextWrapped=true,TextSize=11,TextColor3=colors.accent,
         Font=Enum.Font.Gotham,Text='Observer starting',TextXAlignment=Enum.TextXAlignment.Left},root)
     local order=0
+    local farmAdvanced=false;U.advancedFarm={};U.showAdvanced=false
+    local function advanced(page,row)
+        if page=='FARM' and farmAdvanced then U.advancedFarm[#U.advancedFarm+1]=row;row.Visible=U.showAdvanced end
+    end
     local function label(page,fn,color)
         order+=1
         local x=mk('TextLabel',{LayoutOrder=order,Size=UDim2.new(1,-6,0,0),AutomaticSize=Enum.AutomaticSize.Y,
@@ -69,6 +73,7 @@ return function(app)
             TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,
             Font=Enum.Font.Gotham,Text=''},pages[page])
         U.labels[#U.labels+1]={x=x,fn=type(fn)=='function' and fn or function() return fn end}
+        advanced(page,x)
     end
     local function button(page,title,fn)
         order+=1
@@ -76,6 +81,7 @@ return function(app)
             TextColor3=colors.text,TextSize=12,TextWrapped=true,Font=Enum.Font.GothamSemibold,BorderSizePixel=0,
             Text=type(title)=='string' and title or ''},pages[page]);round(x)
         if type(title)=='function' then U.buttons[#U.buttons+1]={x=x,fn=title} end
+        advanced(page,x)
         bind(x.Activated,function()
             if U.alive then
                 local ok,err=pcall(fn);if not ok then app:error(err) end
@@ -89,6 +95,7 @@ return function(app)
         local x=mk('TextBox',{LayoutOrder=order,Size=UDim2.new(1,-6,0,44),BackgroundColor3=colors.card,
             TextColor3=colors.text,TextSize=12,Font=Enum.Font.Gotham,Text=tostring(app.cfg[key] or ''),
             PlaceholderText='unknown / unset',ClearTextOnFocus=false,BorderSizePixel=0},pages[page]);round(x)
+        advanced(page,x)
         bind(x.FocusLost,function()
             app:set(key,numeric and tonumber(x.Text) or x.Text)
             x.Text=tostring(app.cfg[key] or '')
@@ -123,6 +130,32 @@ return function(app)
     label('EVOLUTION','HISTORICAL RECIPE • VERIFY IN EVOLVE MENU',colors.accent)
     label('EVOLUTION',function() return app:evolutionText() end,colors.text)
     label('EVOLUTION','Reported sources: Sacred Treasure from Shibuya Portals; fruit from current fruit challenges. Current eligibility, quantities, prices and recipes need live verification. Evolution and material purchases stay manual.')
+    label('FARM',function()
+        local s=app.snapshot or {}
+        return 'SMART AUTO / '..app.native.state..'\n'..app.native.reason..
+            '\nObserved: '..tostring(s.mode or '?')..' | wave '..tostring(s.wave or '?')..
+            ' | equipped '..#(s.roster or {})..'\n'..app.session:text()
+    end,colors.text)
+    button('FARM','READ GAME DATA + COPY REPORT',function() app:readSmartData() end)
+    button('FARM','APPLY CLEAR-FIRST SETUP',function() app:applyClearFirst() end)
+    button('FARM',function() return app.native.armed and 'STOP SMART AUTO' or 'START SMART AUTO • EXPERIMENTAL' end,function() app:toggleNative() end)
+    button('FARM',function() return 'KEEP UI + AUTHORIZED AUTO AFTER TELEPORT: '..tostring(app.session.following) end,function() app:toggleFollow() end)
+    label('FARM','Story / existing Dungeon run. Start new key-consuming Dungeons manually. Automatic spots use observed lanes and terrain; a missing legal spot stops with a blocker. Supervise the first clear.')
+    button('FARM',function() return 'DUNGEON STRATEGY: '..app.cfg.dungeonPreset end,function() app:cycle('dungeonPreset',{'Safe','Rewards'}) end)
+    button('FARM',function() return 'ALLOW OPENING FINAL DUNGEON CHESTS: '..tostring(app.cfg.dungeonOpenChests) end,function() app:toggle('dungeonOpenChests') end)
+    field('FARM','Maximum Dungeon coins spent in this armed run (0 = skip shop)','dungeonShopCap',true)
+    button('FARM',function() return 'AUTOMATIC WAVE START: '..tostring(app.cfg.autoStartWaves) end,function() app:toggle('autoStartWaves') end)
+    button('FARM',function() return 'RETURN TO LOBBY AFTER STORY: '..tostring(app.cfg.autoReturnLobby) end,function() app:toggle('autoReturnLobby') end)
+    button('FARM',function() return 'NEXT STORY AFTER VICTORY: '..tostring(app.cfg.autoNextStory) end,function() app:toggle('autoNextStory') end)
+    button('FARM','COPY SMART AUTO REPORT',function() app:copyReport() end)
+    button('FARM',function() return (U.showAdvanced and 'HIDE' or 'SHOW')..' ADVANCED / OLD TEST CONTROLS' end,function()
+        U.showAdvanced=not U.showAdvanced
+        for _,row in ipairs(U.advancedFarm) do row.Visible=U.showAdvanced end
+    end)
+    farmAdvanced=true
+    button('FARM',function() return 'PLACEMENT ORDER: '..app.cfg.autoMethod end,function() app:cycle('autoMethod',{'RoundRobin','Cheapest'}) end)
+    button('FARM',function() return 'UPGRADE PRIORITY: '..app.cfg.autoUpgradeMethod end,function() app:cycle('autoUpgradeMethod',{'LowestLevel','Cheapest'}) end)
+    button('FARM',function() return 'NATIVE TARGET PRIORITY: '..app.cfg.autoTarget end,function() app:cycle('autoTarget',{'GameDefault','first'}) end)
     label('FARM',function() return app:farmText() end,colors.text)
     button('FARM','READ MATCH DATA + COPY COMBAT REPORT',function() app:readMatchData() end)
     label('FARM',function() return app.team:text(app.snapshot,app.teamProfile) end,colors.text)
@@ -160,19 +193,23 @@ return function(app)
     button('REPORTS','COPY TEAM REPORT',function() app:copyTeamReport() end)
     button('REPORTS','SCAN DATA PATHS + COPY REPORT',function() app:scanPathsAndCopy() end)
     button('REPORTS','SAVE BOUNDED REPORT LOCALLY',function() app:saveReport() end)
+    farmAdvanced=false
     label('REPORTS',function() return app:reportStatus() end,colors.text)
     label('REPORTS',function() return app:recentLogs() end)
     label('SETTINGS','MOBILE / RESOURCE PROTECTION',colors.accent)
     field('SETTINGS','Yen reserve','reserve',true)
     field('SETTINGS','Maximum confirmed runs per armed session','maxRuns',true)
     field('SETTINGS','Session timeout (seconds)','maxSeconds',true)
+    field('SETTINGS','Placement anchor along observed path (0 spawn / 100 base)','autoDistance',true)
+    field('SETTINGS','Ground search radius (% of planning range)','autoGround',true)
+    field('SETTINGS','Hill search radius (% of planning range)','autoHill',true)
     field('SETTINGS','Player inventory path (e.g. player/owned_units)','inventoryPath',false)
     field('SETTINGS','Player item count path (e.g. player/_data/items)','resourcePath',false)
     field('SETTINGS','Optional match Yen Value path (verify it belongs to you)','cashPath',false)
     button('SETTINGS','SAVE SETTINGS / RECORDED PROFILE',function() app:saveSettings() end)
     button('SETTINGS','COPY CONFIGURATION (contains unit UUIDs)',function() app:copyConfig() end)
     button('SETTINGS','STOP + CLOSE',function() app:stop() end)
-    label('SETTINGS','No hooks or GC scans. One remote request at a time. Auto is never armed after loading settings. Close disconnects all input listeners; minimize preserves the observer. Old v5 settings remain untouched.')
+    label('SETTINGS','No hooks or GC scans. One mutation at a time. Ordinary loads stay unarmed; explicit teleport continuation must verify its destination and original limits. Close revokes following; minimize keeps this observer. Zeno must be closed.')
     local dragging=false;local begin,origin,dragTouch
     bind(header.InputBegan,function(input)
         if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then
@@ -190,7 +227,7 @@ return function(app)
         if not self.alive then return end
         for _,row in ipairs(self.labels) do row.x.Text=tostring(row.fn()) end
         for _,row in ipairs(self.buttons) do row.x.Text=tostring(row.fn()) end
-        local active=app.team.armed and app.team or app.engine
+        local active=app.native.armed and app.native or (app.team.armed and app.team or app.engine)
         footer.Text=active.state..' • '..tostring(app.status):sub(1,140)
         local cam=workspace.CurrentCamera
         if cam then
