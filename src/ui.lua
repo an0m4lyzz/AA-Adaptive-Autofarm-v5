@@ -1,3 +1,5 @@
+local addAdvanced=require('./uiadvanced')
+local viewMath=require('./uiview')
 return function(app)
     local UIS=game:GetService('UserInputService')
     local LP=game:GetService('Players').LocalPlayer
@@ -8,18 +10,25 @@ return function(app)
     gui.Name='K_AA_Rukia_V6';gui.ResetOnSpawn=false;gui.DisplayOrder=80
     gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
     gui.Parent=LP:FindFirstChildOfClass('PlayerGui')
-    local U={gui=gui,connections={},labels={},buttons={},page='RUKIA',alive=true}
+    local U={gui=gui,connections={},labels={},buttons={},fields={},page='RUKIA',alive=true}
     local function bind(signal,fn)
         local c=signal:Connect(fn);U.connections[#U.connections+1]=c;return c
     end
+    local styles={}
     local function mk(class,props,parent)
         local x=Instance.new(class)
         for k,v in pairs(props) do x[k]=v end
+        for prop,value in pairs(props) do for role,color in pairs(colors) do
+            if value==color then styles[#styles+1]={x=x,prop=prop,role=role};break end
+        end end
         x.Parent=parent;return x
     end
     local function round(x,r) mk('UICorner',{CornerRadius=UDim.new(0,r or 8)},x) end
     local root=mk('Frame',{Size=UDim2.fromOffset(360,520),Position=UDim2.new(.5,-180,.5,-260),
         BackgroundColor3=colors.bg,BorderSizePixel=0,Active=true},gui)
+    root.ZIndex=2
+    local overlay=mk('Frame',{Size=UDim2.fromScale(1,1),Position=UDim2.fromOffset(0,0),
+        BackgroundColor3=Color3.fromRGB(0,0,0),BorderSizePixel=0,ZIndex=1,Visible=false,Active=false},gui)
     round(root,14)
     mk('UIStroke',{Color=colors.line,Thickness=1},root)
     local scale=mk('UIScale',{Scale=1},root)
@@ -62,9 +71,15 @@ return function(app)
         BackgroundTransparency=1,TextWrapped=true,TextSize=11,TextColor3=colors.accent,
         Font=Enum.Font.Gotham,Text='Observer starting',TextXAlignment=Enum.TextXAlignment.Left},root)
     local order=0
-    local farmAdvanced=false;U.advancedFarm={};U.showAdvanced=false
-    local function advanced(page,row)
+    local farmAdvanced=false;U.advancedFarm={};U.searchMetadata={};U.showAdvanced=false
+    function U:filterAdvanced()
+        local query=self.search and self.search.Text:lower():sub(1,100) or ''
+        for _,row in ipairs(self.advancedFarm) do row.Visible=self.showAdvanced and (query=='' or (self.searchMetadata[row] or row.Text):lower():find(query,1,true)~=nil) end
+        if self.search then self.search.Visible=self.showAdvanced end
+    end
+    local function advanced(page,row,title)
         if page=='FARM' and farmAdvanced then U.advancedFarm[#U.advancedFarm+1]=row;row.Visible=U.showAdvanced end
+        if title then U.searchMetadata[row]=title end
     end
     local function label(page,fn,color)
         order+=1
@@ -95,13 +110,15 @@ return function(app)
         local x=mk('TextBox',{LayoutOrder=order,Size=UDim2.new(1,-6,0,44),BackgroundColor3=colors.card,
             TextColor3=colors.text,TextSize=12,Font=Enum.Font.Gotham,Text=tostring(app.cfg[key] or ''),
             PlaceholderText='unknown / unset',ClearTextOnFocus=false,BorderSizePixel=0},pages[page]);round(x)
-        advanced(page,x)
+        advanced(page,x,title)
+        U.fields[#U.fields+1]={x=x,key=key}
         bind(x.FocusLost,function()
             app:set(key,numeric and tonumber(x.Text) or x.Text)
             x.Text=tostring(app.cfg[key] or '')
         end)
     end
     label('RUKIA','UPDATE 21 • LIVE ADAPTER UNVERIFIED',colors.accent)
+    button('REPORTS','CAPTURE GAME DATA ONCE + COPY',function() app:captureGameData() end)
     label('RUKIA',function() return app:ownershipText() end,colors.text)
     label('RUKIA',function() return app:objectiveText() end)
     label('RUKIA',function() return app:walletText() end)
@@ -144,18 +161,59 @@ return function(app)
     button('FARM',function() return 'DUNGEON STRATEGY: '..app.cfg.dungeonPreset end,function() app:cycle('dungeonPreset',{'Safe','Rewards'}) end)
     button('FARM',function() return 'ALLOW OPENING FINAL DUNGEON CHESTS: '..tostring(app.cfg.dungeonOpenChests) end,function() app:toggle('dungeonOpenChests') end)
     field('FARM','Maximum Dungeon coins spent in this armed run (0 = skip shop)','dungeonShopCap',true)
+    label('FARM',function() return app:dungeonBudgetText() end)
+    button('FARM',function() return 'AUTHORIZE NEW DUNGEON COIN ALLOWANCE: '..app.cfg.dungeonShopCap end,function() app:reviewDungeonBudget() end)
+    field('FARM','Optional shop priority: current item IDs separated by commas','dungeonBuyOrder',false)
+    button('FARM',function() return 'SHRINES: EXACT ITEM WHITELIST ONLY / '..tostring(app.cfg.dungeonShrines) end,function() app:toggle('dungeonShrines') end)
+    field('FARM','Every offered shrine item/curse must be listed by exact ID','dungeonShrineItems',false)
+    label('FARM',function() return app:dungeonInfo() end)
     button('FARM',function() return 'AUTOMATIC WAVE START: '..tostring(app.cfg.autoStartWaves) end,function() app:toggle('autoStartWaves') end)
     button('FARM',function() return 'RETURN TO LOBBY AFTER STORY: '..tostring(app.cfg.autoReturnLobby) end,function() app:toggle('autoReturnLobby') end)
     button('FARM',function() return 'NEXT STORY AFTER VICTORY: '..tostring(app.cfg.autoNextStory) end,function() app:toggle('autoNextStory') end)
     button('FARM','COPY SMART AUTO REPORT',function() app:copyReport() end)
     button('FARM',function() return (U.showAdvanced and 'HIDE' or 'SHOW')..' ADVANCED / OLD TEST CONTROLS' end,function()
         U.showAdvanced=not U.showAdvanced
-        for _,row in ipairs(U.advancedFarm) do row.Visible=U.showAdvanced end
+        U:filterAdvanced()
     end)
+    order+=1
+    U.search=mk('TextBox',{LayoutOrder=order,Size=UDim2.new(1,-6,0,44),BackgroundColor3=colors.card,
+        TextColor3=colors.text,TextSize=12,Font=Enum.Font.Gotham,Text='',PlaceholderText='Search advanced controls',
+        ClearTextOnFocus=false,BorderSizePixel=0,Visible=false},pages.FARM)
+    round(U.search);bind(U.search:GetPropertyChangedSignal('Text'),function() U:filterAdvanced() end)
     farmAdvanced=true
-    button('FARM',function() return 'PLACEMENT ORDER: '..app.cfg.autoMethod end,function() app:cycle('autoMethod',{'RoundRobin','Cheapest'}) end)
-    button('FARM',function() return 'UPGRADE PRIORITY: '..app.cfg.autoUpgradeMethod end,function() app:cycle('autoUpgradeMethod',{'LowestLevel','Cheapest'}) end)
-    button('FARM',function() return 'NATIVE TARGET PRIORITY: '..app.cfg.autoTarget end,function() app:cycle('autoTarget',{'GameDefault','first'}) end)
+    field('FARM','Macro name (letters/numbers/underscore; separate local files)','macroName',false)
+    label('FARM',function() return app.macro:text()..' | recorded steps '..tostring(app.macro.data and #app.macro.data.steps or 0) end)
+    button('FARM','START RECORDING OUR VERIFIED ACTIONS',function() app:startMacroRecording() end)
+    button('FARM','STOP RECORDING + SAVE MACRO',function() app:finishMacroRecording() end)
+    button('FARM','LOAD NAMED MACRO',function() app:loadMacro() end)
+    button('FARM','START / STOP MACRO THROUGH NATIVE RUNTIME',function() app:toggleMacro() end)
+    button('FARM','COPY DATA-ONLY MACRO',function() app:copyMacro() end)
+    button('FARM','IMPORT VALIDATED MACRO FROM CLIPBOARD',function() app:importMacro() end)
+    button('FARM','RENAME LOADED MACRO TO FIELD NAME',function() app:renameMacro() end)
+    button('FARM','DELETE NAMED MACRO • BACKUP FIRST',function() app:deleteMacro() end)
+    button('FARM',function() return 'MANUAL CAPTURE ACTION: '..app.cfg.manualMacroKind end,function() app:cycle('manualMacroKind',{'place','upgrade','priority','ability','sell'}) end)
+    button('FARM','MANUAL CAPTURE: SAVE BEFORE STATE',function() app:beginManualMacro() end)
+    button('FARM','MANUAL CAPTURE: RECORD ONE AFTER CHANGE',function() app:endManualMacro() end)
+    button('FARM',function() return 'MACRO IGNORE WAVE TIMING: '..tostring(app.cfg.macroIgnoreTiming) end,function() app:toggle('macroIgnoreTiming') end)
+    button('FARM',function() return 'PLACEMENT ORDER: '..app.cfg.autoMethod end,function() app:cycle('autoMethod',{'RoundRobin','Cheapest','Custom'}) end)
+    button('FARM',function() return 'UPGRADE PRIORITY: '..app.cfg.autoUpgradeMethod end,function() app:cycle('autoUpgradeMethod',{'LowestLevel','Cheapest','SlotOrder','Custom'}) end)
+    field('FARM','Custom slot order (1–6, comma separated)','slotOrder',false)
+    field('FARM','Placement caps by slot: 0 = game cap; -1 = disabled','placeCaps',false)
+    field('FARM','Upgrade caps by slot: 0 = max; -1 = no upgrades','upgradeCaps',false)
+    field('FARM','Earliest placement waves for slots 1–6','placeWaves',false)
+    field('FARM','Earliest upgrade waves for slots 1–6','upgradeWaves',false)
+    button('FARM',function() return 'VOTE ON OBSERVED WAVE SKIP OFFERS: '..tostring(app.cfg.autoSkip) end,function() app:toggle('autoSkip') end)
+    field('FARM','Stop skip voting at wave (0 = no wave limit)','skipStopWave',true)
+    field('FARM','Sell known sellable farms at wave (0 = disabled; Bulma excluded)','sellFarmWave',true)
+    field('FARM','Sell known sellable towers at wave (0 = disabled)','sellAllWave',true)
+    field('FARM','Delay after confirmed Story victory (seconds)','finishDelay',true)
+    button('FARM',function() return 'UPGRADE WHILE SAVING AFTER FIRST DEFENDER: '..tostring(app.cfg.upgradeBetweenPlacements) end,function() app:toggle('upgradeBetweenPlacements') end)
+    button('FARM',function() return 'AFFORDABLE FARM UPGRADES FIRST: '..tostring(app.cfg.focusFarm) end,function() app:toggle('focusFarm') end)
+    button('FARM',function() return 'OBSERVED NORMAL ABILITIES: '..tostring(app.cfg.autoAbilities) end,function() app:toggle('autoAbilities') end)
+    field('FARM','Minimum gap between same-unit normal abilities (seconds)','abilityGap',true)
+    label('FARM','Abilities need exact cooldown/cast and enemy range data. Buff chains and meter/toggle semantics remain blocked until observed.')
+    button('FARM',function() return 'NATIVE TARGET PRIORITY: '..app.cfg.autoTarget end,function() app:cycle('autoTarget',{'GameDefault','first','last','strongest','weakest','closest','farthest'}) end)
+    button('FARM',function() return 'OBSERVED BOSS TARGET: '..app.cfg.autoBossTarget end,function() app:cycle('autoBossTarget',{'GameDefault','first','last','strongest','weakest','closest','farthest'}) end)
     label('FARM',function() return app:farmText() end,colors.text)
     button('FARM','READ MATCH DATA + COPY COMBAT REPORT',function() app:readMatchData() end)
     label('FARM',function() return app.team:text(app.snapshot,app.teamProfile) end,colors.text)
@@ -223,15 +281,50 @@ return function(app)
             root.Position=UDim2.new(origin.X.Scale,origin.X.Offset+d.X,origin.Y.Scale,origin.Y.Offset+d.Y)
         end
     end)
+    local function secretField(page,title,callback)
+        label(page,title);order+=1
+        local x=mk('TextBox',{LayoutOrder=order,Size=UDim2.new(1,-6,0,44),BackgroundColor3=colors.card,TextColor3=colors.text,
+            Text='',PlaceholderText='Paste, submit, then cleared from view',TextSize=12,Font=Enum.Font.Gotham,ClearTextOnFocus=false},pages[page])
+        round(x);bind(x.FocusLost,function() local value=x.Text;x.Text='';if value~='' then callback(value) end end)
+    end
+    addAdvanced(app,label,button,field,secretField)
     function U:refresh()
         if not self.alive then return end
-        for _,row in ipairs(self.labels) do row.x.Text=tostring(row.fn()) end
-        for _,row in ipairs(self.buttons) do row.x.Text=tostring(row.fn()) end
+        for _,field in ipairs(self.fields) do
+            if not field.x:IsFocused() then
+                local value=tostring(app.cfg[field.key] or '')
+                if field.x.Text~=value then field.x.Text=value end
+            end
+        end
+        for _,row in ipairs(self.labels) do local text=tostring(row.fn());if row.x.Text~=text then row.x.Text=text end end
+        for _,row in ipairs(self.buttons) do local text=tostring(row.fn());if row.x.Text~=text then row.x.Text=text end end
+        self:filterAdvanced();overlay.Visible=app.cfg.blackScreen==true
+        if self.lastTheme~=app.cfg.uiTheme then
+            self.lastTheme=app.cfg.uiTheme
+            local bg=app.cfg.uiTheme=='OLED' and Color3.fromRGB(0,0,0) or app.cfg.uiTheme=='Midnight' and Color3.fromRGB(8,12,32) or Color3.fromRGB(13,17,25)
+            root.BackgroundColor3=bg
+            if app.cfg.uiTheme=='Midnight' then colors.card=Color3.fromRGB(24,28,56);colors.active=Color3.fromRGB(55,49,109)
+            else colors.card=Color3.fromRGB(24,31,43);colors.active=Color3.fromRGB(29,83,99) end
+            for _,item in ipairs(styles) do if item.role~='bg' then pcall(function() item.x[item.prop]=colors[item.role] end) end end
+            for name,tab in pairs(tabs) do tab.BackgroundColor3=name==self.page and colors.active or colors.card end
+        end
         local active=app.native.armed and app.native or (app.team.armed and app.team or app.engine)
         footer.Text=active.state..' • '..tostring(app.status):sub(1,140)
         local cam=workspace.CurrentCamera
         if cam then
-            scale.Scale=math.clamp(math.min(cam.ViewportSize.X/380,cam.ViewportSize.Y/550),.5,1)
+            local insets={}
+            pcall(function()
+                local a,b=game:GetService('GuiService'):GetGuiInset()
+                insets={left=a.X,top=a.Y,right=b.X,bottom=b.Y}
+            end)
+            local fit=viewMath.fit(cam.ViewportSize.X,cam.ViewportSize.Y,app.cfg.uiScale,insets)
+            if fit then
+                scale.Scale=fit.scale
+                local p,size=root.AbsolutePosition,root.AbsoluteSize
+                local dx=math.clamp(p.X,fit.minX,math.max(fit.minX,fit.maxRight-size.X))-p.X
+                local dy=math.clamp(p.Y,fit.minY,math.max(fit.minY,fit.maxBottom-size.Y))-p.Y
+                if math.abs(dx)>1 or math.abs(dy)>1 then root.Position=root.Position+UDim2.fromOffset(dx,dy) end
+            end
         end
     end
     function U:close()

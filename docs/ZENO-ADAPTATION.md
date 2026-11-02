@@ -1,4 +1,6 @@
-# Native adaptation — v7.0.0
+# Native adaptation — v7 baseline
+
+Current runtime: v8.0.0. See the [v8 execution ledger](superpowers/plans/2026-11-02-complete-hub-progress.md) for new implementations and remaining blockers. The v7 scope/evidence below is retained as the baseline, not a current full-parity claim.
 
 The user's Zeno screenshots show a working interface in Sky Aircraft Dungeon Room, depth8/wave8, five equipped slots at their listed placement caps, Idol0/1 with a generic retry label, and an expensive Bulby upgrade waiting for cash. They do not prove automated clears, the cause of Idol's refusal or a Rukia drop.
 

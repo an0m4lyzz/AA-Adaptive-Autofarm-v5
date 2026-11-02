@@ -115,8 +115,20 @@ return function(C)
                         local price=get(offer,'currentCost')
                         if not integer(price) then price=nil end
                         -- No default multiplier: discounts must be observed by the adapter.
+                        local def=get(items,id)
                         phase.offers[index]={index=index,id=id,baseCost=base,price=price,
+                            name=type(get(def,'name'))=='string' and get(def,'name'):sub(1,100) or id,
+                            description=type(get(def,'description'))=='string' and get(def,'description'):sub(1,500) or nil,
                             priceSource=price~=nil and 'observed currentCost' or 'unknown'}
+                    end
+                elseif kind=='Shrine' then
+                    phase.acceptKnown=#data>0
+                    for index,offer in ipairs(data) do
+                        local id,ty=get(offer,'id'),get(offer,'_t')
+                        local def=type(id)=='string' and get(items,id)
+                        if ty~='Item' or type(def)~='table' then phase.acceptKnown=false end
+                        phase.offers[index]={id=id,type=ty,name=type(get(def,'name'))=='string' and get(def,'name'):sub(1,100) or id,
+                            description=type(get(def,'description'))=='string' and get(def,'description'):sub(1,500) or nil}
                     end
                 end
                 d.phases[i]=phase
@@ -197,7 +209,7 @@ return function(C)
             if cap~=nil and (not number(cap) or cap>1000000) then self:stop('Invalid Dungeon shop budget');return false end
             self.armed=true;self.state='RUNNING';self.reason='Existing Dungeon run armed'
             self.started=s.now;self.spent=0;self.pending=nil;self.bought={};self.entered=nil;self.last=baseline(s.dungeon)
-            self.currentRoom=nil;self.transitionWaitAt=nil;self.lobbyVictory=false;observeCurrent(self,s.dungeon)
+            self.currentRoom=nil;self.transitionWaitAt=nil;self.lobbyVictory=false;self.acceptedShrines={};observeCurrent(self,s.dungeon)
             self.log:add('DUNGEON ARM',self.reason);return true
         end
         function e:reject(reason) self:stop('Dungeon action rejected: '..tostring(reason)) end
@@ -227,6 +239,10 @@ return function(C)
             elseif x.kind=='chest' then
                 return d.keyToken==x.beforeKeyToken and d.phase.kind=='Chest' and d.started and d.normalChests==x.normal-(x.rare and 0 or 1)
                     and d.rareChests==x.rareCount-(x.rare and 1 or 0)
+            elseif x.kind=='shrine' then
+                if d.keyToken~=x.beforeKeyToken or not d.started or d.money~=x.money then return false end
+                for id,n in pairs(x.items) do if (d.itemCounts[id] or 0)~=n.before+n.gain then return false end end
+                return true
             end
             return false
         end
@@ -260,6 +276,7 @@ return function(C)
                 if confirmed(p,d,s) then
                     self.confirmations+=1
                     if p.expected.kind=='buy' then self.spent+=p.expected.price;self.bought[p.expected.id]=true end
+                    if p.expected.kind=='shrine' then self.acceptedShrines[p.expected.phaseToken]=true end
                     if p.expected.kind=='enter' then
                         self.entered={reset=s.inMatch==true and s.resultVisible~=true};self.transitionWaitAt=nil
                     end
@@ -326,7 +343,13 @@ return function(C)
                 if number(cap) and cap>0 then
                     local counts={}
                     for _,offer in ipairs(phase.offers) do counts[offer.id]=(counts[offer.id] or 0)+1 end
-                    for _,offer in ipairs(phase.offers) do
+                    local ordered=table.clone(phase.offers);local order={};local index=0
+                    for id in tostring(cfg.dungeonBuyOrder or ''):gmatch('[%w_%-]+') do index+=1;order[id]=index end
+                    if index>0 then table.sort(ordered,function(a,b)
+                        local ar,br=order[a.id] or 1000,order[b.id] or 1000
+                        return ar==br and a.index<b.index or ar<br
+                    end) end
+                    for _,offer in ipairs(ordered) do
                         if not self.bought[offer.id] and counts[offer.id]==1 and integer(offer.price) and offer.price<=d.money and self.spent+offer.price<=cap then
                             return action(self,s,'dungeon_buy_shop',{offer.index},{kind='buy',id=offer.id,index=offer.index,
                                 price=offer.price,money=d.money,itemCount=d.itemCounts[offer.id] or 0,phaseToken=phase.token})
@@ -336,6 +359,18 @@ return function(C)
                 return action(self,s,'dungeon_continue_shop',{},
                     {kind='continue',phaseToken=phase.token,nextPhaseToken=d.nextPhaseToken,finishing=finishing})
             elseif phase.kind=='Shrine' then
+                if cfg.dungeonShrines==true and phase.acceptKnown and not self.acceptedShrines[phase.token] then
+                    local allow={};for id in tostring(cfg.dungeonShrineItems or ''):gmatch('[%w_%-]+') do allow[id]=true end
+                    local accepted,items=true,{}
+                    for _,offer in ipairs(phase.offers) do
+                        if not allow[offer.id] then accepted=false;break end
+                        items[offer.id]=items[offer.id] or {before=d.itemCounts[offer.id] or 0,gain=0}
+                        items[offer.id].gain+=1
+                    end
+                    if accepted and next(items)~=nil then
+                        return action(self,s,'dungeon_shrine_accept',{}, {kind='shrine',items=items,money=d.money,phaseToken=phase.token})
+                    end
+                end
                 return action(self,s,'dungeon_continue_shop',{},
                     {kind='continue',phaseToken=phase.token,nextPhaseToken=d.nextPhaseToken,finishing=finishing})
             elseif phase.kind=='Chest' then

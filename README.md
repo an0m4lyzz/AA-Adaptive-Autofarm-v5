@@ -1,8 +1,8 @@
-# [K] Anime Adventures — Rukia progression v7
+# [K] Anime Adventures — native expansion v8
 
-**v7.0.0: native Smart Auto, existing-run Dungeon flow and opt-in teleport following. Offline tested; new Roblox/Delta behavior remains EXPERIMENTAL. Complete Rukia progression is not live verified.**
+**v8.0.0: expanded native team controls, guarded normal abilities/wave actions, Dungeon choices, data-only macros, mobile profiles and bounded reports. Offline tested; Roblox/Delta behavior remains EXPERIMENTAL. The complete 59-feature plan is not finished or live certified.**
 
-The [complete hub master plan](docs/superpowers/specs/2026-11-02-complete-hub-design.md) accounts for the full reference menu and Rukia workflow, with an [implementation checklist](docs/superpowers/plans/2026-11-02-complete-hub.md). These documents describe future work; the runtime remains v7.0.0.
+The [complete hub master plan](docs/superpowers/specs/2026-11-02-complete-hub-design.md) accounts for the full reference menu and Rukia workflow, with an [implementation checklist](docs/superpowers/plans/2026-11-02-complete-hub.md). See the [execution ledger](docs/superpowers/plans/2026-11-02-complete-hub-progress.md) for implemented work and precise blockers; the runtime is v8.0.0.
 
 The official experience now displays Update 21 (checked November 1, 2026, Manila date). Current Rukia availability, recipe, rates and protocols could not be verified. Read the [research and progression plan](docs/RUKIA-RESEARCH.md), [audit](docs/AUDIT.md) and [testing guide](TESTING.md).
 
@@ -14,7 +14,18 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/an0m4lyzz/AA-Adaptive
 
 main.lua bundles local src modules and uses no external GUI library or Zeno runtime. Explicit teleport following queues only this same entrypoint. Old v5 source and instructions are archived intact in legacy/ and are not loaded. Existing v5 settings remain untouched; the compatible upgrade preference migrates on the first v6 load. Old macros need re-recording.
 
-## Current features
+## New in v8
+
+- One shared action gate and resource ledger; exact existing readback confirms actions. Free current-server combat can operate without disk; spending/following require their durable capabilities.
+- Multi-lane candidates, per-slot place/upgrade caps and wave gates, custom order, guarded normal casts, six priorities, observed boss override, optional skip voting and known-sellable tower scheduling. Bulma is excluded from selling.
+- Current Dungeon phase/item descriptions, custom shop order, explicit all-offer shrine whitelist and an original coin allowance retained across authorized hops. New key use remains unavailable.
+- Native receipt recording, explicit manual before/after capture, data-only macro validation/files/import/export and playback through the same runtime. Unknown foreign macro schemas are rejected.
+- Portable named profiles/backups, advanced-control search, themes/scaling, reversible local effects, reachable black overlay and optional idle input.
+- Per-feature evidence for all 59 groups, bounded/redacted complete reports, retained outcome deduplication and optional session-only webhook controls. No notification is sent by default.
+
+Value/DPS estimates, complex buff/meter strategies, applied-card receipts, new Dungeon entry/death recovery, general lobby/party joiners and premium build/account adapters remain blocked or partial. A status button is not proof they work.
+
+## Existing engine and limits
 
 | Feature | Status / boundary |
 |---|---|
@@ -31,9 +42,9 @@ main.lua bundles local src modules and uses no external GUI library or Zeno runt
 
 The [full Zeno menu audit](docs/ZENO-MENU-AUDIT.md) covers every source menu. [Adaptation details](docs/ZENO-ADAPTATION.md) distinguish implementation, evidence and remaining limits. This is original code using referenced interfaces, not a copied or automatically loaded hub.
 
-## First v7 test
+## First v8 test
 
-1. Restart Roblox so Zeno and its queued reload are gone. Remove Zeno autoexec if you installed it. Run only this project's unchanged loadstring; confirm **7.0.0**.
+1. Restart Roblox so Zeno and its queued reload are gone. Remove Zeno autoexec if you installed it. Run only this project's unchanged loadstring; confirm **8.0.0**.
 2. In FARM tap **READ GAME DATA + COPY REPORT**, then **APPLY CLEAR-FIRST SETUP**. Compare observed equipped slots and costs with the game.
 3. Enable **KEEP UI + AUTHORIZED AUTO AFTER TELEPORT** if desired. Queue and file support must succeed; this does not arm combat yet.
 4. Enter a free Story stage or an already-started Dungeon manually. Read game data inside that match if not connected, then tap **START SMART AUTO**. No manual placement profile is required.

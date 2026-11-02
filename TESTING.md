@@ -127,3 +127,19 @@ python3 scripts/check.py --luau /path/to/luau --compiler /path/to/luau-compile
 ```
 
 These tests do not measure FPS, memory, server acceptance, drop probabilities or dungeon completion.
+
+## v8 native expansion checks
+
+Confirm version 8.0.0 using the original loader. Keep Zeno unloaded and new-key/premium actions unavailable. READ GAME DATA once, APPLY CLEAR-FIRST SETUP, enter a free Story stage and START SMART AUTO. This preset clears old caps/wave/sale rules; it never arms by itself. Inspect the first placements/upgrades. Replay and teleport following still require their explicit controls and finite limits.
+
+Advanced: caps/waves are comma-separated values for hotbar slots 1–6; place cap 0 uses the game cap and -1 disables a slot. Upgrade cap 0 uses the observed maximum and -1 disables upgrades. Normal abilities require exact caster/cooldown/last-cast/enemy-range observations. Buff/toggle/meter abilities are excluded. Skip votes require an observed offer plus current VoteSkip readback. Sale requires explicit observed sellability and never sells Bulma.
+
+For macros, start recording before Smart Auto places its first unit. Stop/save after the desired verified actions; load the named macro in the same fresh stage and start its player. It owns the native strategy slot and shares feedback/spending locks. A manually captured upgrade needs its actor's placement recorded first. Partial/ambiguous captures stop recording rather than fabricate actions. Imported macros/settings never arm themselves; unsupported formats and code are rejected.
+
+For Dungeon, use an already-started run. Set the coin allowance deliberately; the shared ledger survives stop/reload/authorized hops, so a new explicit allowance is required after its original budget expires or is exhausted. Leave the cap at0 to skip purchases. Shrine acceptance defaults OFF and requires every offered item/curse's exact ID on the whitelist. Unknown offer kinds skip. Final chest permission remains separate. A new key or recovery life is not automatically consumed.
+
+Portable profiles omit identities and grants. Low quality restores only local fields still carrying our applied values; the black overlay keeps our own Stop/restore controls visible and is not an FPS claim. Anti-AFK is opt-in and only sends supported idle input while native Auto is running and no action is pending. Webhook URLs are session-only, excluded from reports/exports; no outbound test occurs unless its button is explicitly pressed.
+
+Review REPORTS before treating any feature as live supported. No v8 Roblox/Delta run has been performed by this environment. Use one supervised capture for a concrete blocker instead of repeating the old diagnostic cycle.
+
+The v8 review pass adds privately bound macro rosters and blocks changed copies during waits/replay/teleport. Profile/reset values now refresh in editable controls without overwriting focused edits. Macro rename refuses occupied destinations. Configuration-copy still has one outdated UUID label; the export itself is portable preferences only.

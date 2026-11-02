@@ -1,13 +1,15 @@
 -- Native automatic combat policy. Pure snapshots in; at most one request out.
 -- Geometry and transport belong to their adapters. RPC replies are never proof.
+local makeAbilities=require('./abilities')
 return function(C,cfg,log)
     log=log or C.logger()
+    local abilities=makeAbilities(C)
     local A={armed=false,state='IDLE',reason='Native Auto OFF',pending=nil,
         placements=0,upgrades=0,confirmations=0,runs=0,wins=0,losses=0,reportDue=false,
         targetStatus='Game default target priority'}
     local function cap(u)
         if not C.finite(u.spawnCap) or u.spawnCap<1 or u.spawnCap%1~=0 then return nil end
-        return C.hasTrait(u,'Unique') and 1 or math.min(24,u.spawnCap)
+        return math.min(C.hasTrait(u,'Unique') and 1 or 24,C.slotPolicy(cfg,u).placeCap)
     end
     local function acquired(s)
         if cfg.goal~='Acquire' or not C.finite(s.now) or not C.finite(s.ownedAt)
@@ -69,9 +71,12 @@ return function(C,cfg,log)
             need(s.transportBlocked~=true,'Native transport still outstanding')
             need(s.mutationFence~=true,'Previous mutation lacks exact feedback; enter a fresh round')
         end
-        local seen,keys={},{}
+        local seen,keys,slots={},{},{}
         local current=counts(s)
         for _,u in ipairs(s.roster or {}) do
+            local slotKnown=C.finite(u.slot) and u.slot%1==0 and u.slot>=1 and u.slot<=6 and not slots[u.slot]
+            need(slotKnown,'Unique supported hotbar slot1–6 required')
+            if slotKnown then slots[u.slot]=true end
             local identity=type(u.uuid)=='string' and u.uuid~='' and type(u.id)=='string' and u.id~=''
             need(identity and not seen[u.uuid],'Equipped UUID/ID missing or duplicated')
             if identity then seen[u.uuid]=true end
@@ -79,12 +84,14 @@ return function(C,cfg,log)
             need(limit~=nil,'Known positive integer spawn cap required: '..tostring(u.id))
             need(C.finite(u.cost) and u.cost>0,'Deployment price unknown: '..tostring(u.id))
             if limit and identity then
-                need(current[u.uuid]<=limit,'Observed copies exceed equipped cap: '..u.id)
+                need(current[u.uuid]<=u.spawnCap,'Observed copies exceed equipped cap: '..u.id)
                 if not pending and #(s.units or {})<24 and current[u.uuid]<limit then
                     need(spot(s,u)~=nil,'Observed placement spot unavailable: slot '..tostring(u.slot)..' '..u.id)
                 end
             end
         end
+        local enabled=false;for _,u in ipairs(s.roster or {}) do if cap(u) and cap(u)>0 then enabled=true end end
+        need(enabled,'Every equipped slot is disabled by its placement cap')
         for _,u in ipairs(s.units or {}) do
             need(u.key~=nil and not keys[u.key] and C.distance(u.pos,u.pos)==0,'Tower key/position missing or ambiguous')
             if u.key then keys[u.key]=true end
@@ -110,7 +117,7 @@ return function(C,cfg,log)
         self.armed=true;self.state='RUNNING';self.reason='Experimental native combat'
         self.run=s.run;self.roundToken=s.roundToken;self.stage=s.stage;self.mode=s.mode;self.placeId=s.placeId
         self.startedAt=s.now;self.progressAt=s.now;self.lastWave=s.wave;self.lastAction=-math.huge
-        self.cursor=1;self.dataWaitAt=nil;self.reportDue=false
+        self.cursor=1;self.dataWaitAt=nil;self.reportDue=false;self.lastAbilityById={}
         self.targetStatus=cfg.autoTarget=='first' and 'First priority awaits completed placements' or 'Game default target priority'
         log:add('AUTO ARM','Observed '..s.mode..'; bounded equipped targets')
         return true
@@ -138,6 +145,8 @@ return function(C,cfg,log)
             if s.now-p.at>8 then self:stop(p.kind..' feedback timeout; no blind retry');return nil end
             local found,ambiguous
             if p.kind=='place' then found,ambiguous=C.placementVerified(p,s.units)
+            elseif p.kind=='ability' then
+                for _,u in ipairs(s.units) do if abilities.proof(p,u) then found=u;break end end
             elseif p.kind=='priority' then
                 for _,u in ipairs(s.units) do
                     if u.key==p.key and u.uuid==p.uuid and u.id==p.id and C.distance(u.pos,p.pos)<=3
@@ -155,7 +164,9 @@ return function(C,cfg,log)
             if ambiguous then self:stop('Ambiguous placement feedback');return nil end
             if found then
                 if p.kind=='place' then self.placements+=1;self.cursor=p.slotIndex%#s.roster+1
-                elseif p.kind=='priority' then self.confirmations+=1
+                elseif p.kind=='priority' or p.kind=='ability' then
+                    self.confirmations+=1
+                    if p.kind=='ability' then self.lastAbilityById[p.id]=s.now end
                 else self.upgrades+=1 end
                 self.pending=nil;self.lastAction=s.now;self.progressAt=s.now;self.state='RUNNING'
                 log:add('AUTO CONFIRMED',p.kind..' '..p.id)
@@ -164,19 +175,27 @@ return function(C,cfg,log)
         end
         if s.now-self.progressAt>180 then self:stop('No wave/action progress for180 seconds');return nil end
         if not s.started or s.now-self.lastAction<1.5 then return nil end
+        local caster=abilities.choose(s,cfg,self.lastAbilityById)
+        if caster then
+            self.pending={kind='ability',key=caster.key,uuid=caster.uuid,id=caster.id,activeAttack=caster.activeAttack,
+                lastCast=caster.lastCast,at=s.now}
+            self.state='ABILITY_WAIT';self.reason='Casting observed ready ability: '..caster.id
+            return {kind='ability',key=caster.key,uuid=caster.uuid,id=caster.id}
+        end
         local current=counts(s);local hasCombat,combat,farm=false,false,false
         for _,u in ipairs(s.roster) do
-            if u.role=='combat' or u.role=='unknown' or u.role==nil then hasCombat=true;if current[u.uuid]>0 then combat=true end end
+            if cap(u)>0 and (u.role=='combat' or u.role=='unknown' or u.role==nil) then hasCombat=true;if current[u.uuid]>0 then combat=true end end
             if u.role=='farm' and current[u.uuid]>0 then farm=true end
         end
-        local options,missing={},false
+        local options,missing,future={},false,false
         if #s.units<24 then
             for i,u in ipairs(s.roster) do
                 if current[u.uuid]<cap(u) then
-                    missing=true
+                    local eligible=(s.wave or 0)>=C.slotPolicy(cfg,u).placeWave
+                    if eligible then missing=true else future=true end
                     local attack=u.role=='combat' or u.role=='unknown' or u.role==nil
                     local allowed=not hasCombat or combat or attack or (u.role=='farm' and not farm)
-                    if allowed and s.cash-cfg.reserve>=u.cost then options[#options+1]={u=u,index=i,attack=attack} end
+                    if eligible and allowed and s.cash-cfg.reserve>=u.cost then options[#options+1]={u=u,index=i,attack=attack} end
                 end
             end
         end
@@ -186,54 +205,70 @@ return function(C,cfg,log)
                 local ac,bc=current[a.u.uuid],current[b.u.uuid]
                 if (ac==0)~=(bc==0) then return ac==0 end
                 if cfg.autoMethod=='Cheapest' and a.u.cost~=b.u.cost then return a.u.cost<b.u.cost end
+                if cfg.autoMethod=='Custom' then return C.slotRank(cfg,a.u.slot)<C.slotRank(cfg,b.u.slot) end
                 local da=(a.index-self.cursor)%#s.roster;local db=(b.index-self.cursor)%#s.roster
                 return da<db
             end)
             local choice=options[1]
-            if not choice then
+            if not choice and not (cfg.upgradeBetweenPlacements==true and combat) then
                 self.state='WAITING';self.reason=hasCombat and not combat and farm and 'Saving for first combat unit' or 'Waiting for affordable placement';return nil
             end
+            if choice then
             local u=choice.u;local pos=spot(s,u)
             if not pos then self:stop('Observed placement spot unavailable: slot '..tostring(u.slot)..' '..u.id);return nil end
             local before={};for _,v in ipairs(s.units) do before[v.key]=true end
             self.pending={kind='place',uuid=u.uuid,id=u.id,pos=pos,before=before,at=s.now,slotIndex=choice.index}
             self.state='PLACE_WAIT';self.reason='Placing '..u.id..' | quoted Yen='..u.cost
             return {kind='place',uuid=u.uuid,id=u.id,pos=table.clone(pos)}
+            end
         end
         self.state='HOLDING'
-        if cfg.autoTarget=='first' then
+        local target=cfg.autoTarget
+        if cfg.autoBossTarget~='GameDefault' then
+            for _,enemy in ipairs(s.enemyUnits or {}) do if enemy.boss==true and C.finite(enemy.health) and enemy.health>0 then target=cfg.autoBossTarget;break end end
+        end
+        if target~='GameDefault' and table.find({'first','last','strongest','weakest','closest','farthest'},target) then
             local candidate,unavailable=nil,{}
             for _,u in ipairs(s.units) do
                 local entry
                 for _,v in ipairs(s.roster) do if v.uuid==u.uuid and v.id==u.id then entry=v;break end end
                 if entry and entry.role~='farm' and entry.role~='buff' then
                     if type(u.priority)~='string' or u.priority=='' then unavailable[#unavailable+1]=u.id
-                    elseif u.priority~='first' and not candidate then candidate=u end
+                    elseif u.priority~=target and not candidate then candidate=u end
                 end
             end
             self.targetStatus=#unavailable>0 and 'Target priority unavailable: '..table.concat(unavailable,', ')
-                or 'First priority observed on supported combat towers'
+                or target..' priority observed on supported combat towers'
             if candidate then
                 self.pending={kind='priority',key=candidate.key,uuid=candidate.uuid,id=candidate.id,
-                    pos=table.clone(candidate.pos),target='first',at=s.now}
-                self.state='PRIORITY_WAIT';self.reason='Requesting observed combat target priority: first'
-                return {kind='priority',key=candidate.key,uuid=candidate.uuid,id=candidate.id,target='first'}
+                    pos=table.clone(candidate.pos),target=target,at=s.now}
+                self.state='PRIORITY_WAIT';self.reason='Requesting observed combat target priority: '..target
+                return {kind='priority',key=candidate.key,uuid=candidate.uuid,id=candidate.id,target=target}
             end
         else self.targetStatus='Game default target priority' end
         if not cfg.upgrade then self.reason='Known caps/target limit reached; upgrades disabled';return nil end
         local best,unknown=nil,false
         for _,u in ipairs(s.units) do
-            local equipped=false
-            for _,v in ipairs(s.roster) do if v.uuid==u.uuid and v.id==u.id then equipped=true;break end end
+            local equipped=false;local entry
+            for _,v in ipairs(s.roster) do if v.uuid==u.uuid and v.id==u.id then equipped=true;entry=v;break end end
             if equipped then
+                local policy=C.slotPolicy(cfg,entry)
                 local levelKnown=C.finite(u.level) and u.level>=0 and u.level%1==0
-                local maximum=levelKnown and C.finite(u.maxLevel) and u.maxLevel>=0 and u.maxLevel%1==0 and u.level>=u.maxLevel
+                local maximum=policy.upgradeCap==-1 or (s.wave or 0)<policy.upgradeWave
+                    or (levelKnown and policy.upgradeCap>0 and u.level>=policy.upgradeCap)
+                    or (levelKnown and C.finite(u.maxLevel) and u.maxLevel>=0 and u.maxLevel%1==0 and u.level>=u.maxLevel)
                 if not maximum then
                     if not levelKnown or not C.finite(u.nextCost) or u.nextCost<=0 then unknown=true
                     elseif s.cash-cfg.reserve>=u.nextCost then
-                        local cheap=cfg.autoUpgradeMethod=='Cheapest'
+                        u.policySlot=entry.slot;u.policyFarm=entry.role=='farm'
+                        local cheap=cfg.autoUpgradeMethod=='Cheapest' or cfg.autoUpgradeMethod=='Value'
                         local better=not best or (cheap and (u.nextCost<best.nextCost or (u.nextCost==best.nextCost and u.level<best.level)))
                             or (not cheap and (u.level<best.level or (u.level==best.level and u.nextCost<best.nextCost)))
+                        if best and (cfg.autoUpgradeMethod=='Custom' or cfg.autoUpgradeMethod=='SlotOrder') then
+                            better=cfg.autoUpgradeMethod=='Custom' and C.slotRank(cfg,u.policySlot)<C.slotRank(cfg,best.policySlot)
+                                or cfg.autoUpgradeMethod=='SlotOrder' and (u.policySlot or 6)<(best.policySlot or 6)
+                        end
+                        if best and cfg.focusFarm==true and u.policyFarm~=best.policyFarm then better=u.policyFarm end
                         if better then best=u end
                     end
                 end
@@ -248,7 +283,7 @@ return function(C,cfg,log)
         if unknown then
             self.dataWaitAt=self.dataWaitAt or s.now;self.reason='Waiting for known upgrade level/price; maximum unproven'
             if s.now-self.dataWaitAt>15 then self:stop('Upgrade level/price unavailable; maximum unproven') end
-        else self.dataWaitAt=nil;self.reason='Known targets placed; waiting for funds or result' end
+        else self.dataWaitAt=nil;self.reason=future and 'Waiting for configured placement wave' or 'Known targets placed; waiting for funds or result' end
         return nil
     end
     function A:text(_s)

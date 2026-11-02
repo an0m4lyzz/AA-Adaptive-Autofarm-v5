@@ -149,4 +149,11 @@ check('short-range support gets a reserved spot before attackers fill the centre
     assert(C.distance(spots.support[1].pos,{50,0,0})==0)
     assert(C.distance(spots.a[1].pos,spots.support[1].pos)>6)
 end)
+check('multiple legal copies distribute over observed lane anchors',function()
+ local w=world();w.lanes.kids[2]=node('2','Folder',{part('spawn',0,100),part('final',200,100)})
+ local spots,why=w.planner:plan(w.s,w.definitions,{});assert(spots,why)
+ local nearFirst,nearSecond=false,false
+ for _,e in ipairs(spots.a) do nearFirst=nearFirst or math.abs(e.pos[3])<30;nearSecond=nearSecond or math.abs(e.pos[3]-100)<30 end
+ assert(nearFirst and nearSecond,'one lane was ignored')
+end)
 print('All '..n..' navigation tests passed')

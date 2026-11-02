@@ -36,7 +36,7 @@ check('requires known positive integral caps and deployment prices',function()
     local s=snapshot();s.roster[1].spawnCap=nil;assert(not engine():arm(s));s=snapshot();s.roster[1].cost=nil;assert(not engine():arm(s))
 end)
 check('requires one supported spot for every unfilled slot',function()
-    local s=snapshot();s.roster[2]=unit('b','second',100);local e=engine();assert(not e:arm(s));assert(e.reason:find('b',1,true))
+    local s=snapshot();s.roster[2]=unit('b','second',100);s.roster[2].slot=2;local e=engine();assert(not e:arm(s));assert(e.reason:find('b',1,true))
 end)
 check('external controller and unresolved native feedback block arming',function()
     for _,key in ipairs({'externalControllerActive','mutationFence','transportBlocked'}) do local s=snapshot();s[key]=true;assert(not engine():arm(s)) end
@@ -76,7 +76,7 @@ check('twenty four live targets bound all automatic placements',function()
     local e=engine({upgrade=false});assert(e:arm(s));assert(e:tick(s)==nil and e.state=='HOLDING')
 end)
 check('balanced opening permits one farm while saving for first combat',function()
-    local s=snapshot();s.cash=100;s.roster={unit('a','attacker',500),unit('f','farm',50,'farm',3),unit('b','buff',25,'buff')}
+    local s=snapshot();s.cash=100;s.roster={unit('a','attacker',500),unit('f','farm',50,'farm',3),unit('b','buff',25,'buff')};for i,u in ipairs(s.roster) do u.slot=i end
     s.autoSpots.f={{pos={40,0,10}},{pos={60,0,10}}};s.autoSpots.b={{pos={50,0,10}}};local e=engine();assert(e:arm(s));local a=e:tick(s);assert(a.uuid=='f')
     s.units={tower('farm1','f','farm',a.pos)};s.now=2;e:tick(s);s.now=4;assert(e:tick(s)==nil and e.reason:find('combat'))
 end)
@@ -169,7 +169,7 @@ check('unknown priority skips unsupported models and reports availability',funct
     s=snapshot();s.units={tower('unknown','a','attacker',{10,0,10},0,100)};e=priorityEngine();assert(e:arm(s));assert(e:tick(s).kind=='upgrade');assert(e:text(s):find('priority unavailable',1,true))
 end)
 check('targeting skips farm buff unrelated and already first towers',function()
-    local s=snapshot();s.roster={unit('a','attacker',100),unit('f','farm',50,'farm'),unit('b','buff',50,'buff')}
+    local s=snapshot();s.roster={unit('a','attacker',100),unit('f','farm',50,'farm'),unit('b','buff',50,'buff')};for i,u in ipairs(s.roster) do u.slot=i end
     s.units={tower('attack','a','attacker',{10,0,10}),tower('farm','f','farm',{20,0,10}),tower('buff','b','buff',{30,0,10}),tower('other','z','unrelated',{40,0,10})}
     for _,u in ipairs(s.units) do u.priority='last' end;s.units[1].priority='first'
     local e=priorityEngine({upgrade=false});assert(e:arm(s));assert(e:tick(s)==nil and not e.pending and e.confirmations==0)
@@ -186,5 +186,23 @@ end)
 check('missing-spot diagnostics never include equipped UUID record names',function()
     local s=snapshot();s.autoSpots={};s.roster[1].uuid='private-unit-record'
     local a=engine();assert(not a:arm(s));assert(not a:text(s):find('private-unit-record',1,true))
+end)
+check('per slot caps and waves prevent early placement and extra copies',function()
+ local s=snapshot();local cfg=C.sanitize({placeCaps='-1',placeWaves='3'});local e=makeAuto(C,cfg,C.logger());assert(not e:arm(s))
+ cfg=C.sanitize({placeCaps='1',placeWaves='3'});e=makeAuto(C,cfg,C.logger());assert(e:arm(s));assert(not e:tick(s))
+ s.wave=3;assert(e:tick(s).kind=='place')
+end)
+check('full target priorities preserve exact readback',function()
+ local s=snapshot();s.units={tower('x','a','attacker',{10,0,10},3)};s.units[1].priority='first'
+ local cfg=C.sanitize({autoTarget='strongest'});local e=makeAuto(C,cfg,C.logger());assert(e:arm(s));local a=e:tick(s);assert(a.kind=='priority' and a.target=='strongest')
+ s.units[1].priority='strongest';s.now=2;e:tick(s);assert(e.confirmations==1)
+end)
+check('upgrade cap and wave gate preserve attained levels',function()
+ local s=snapshot();s.units={tower('x','a','attacker',{10,0,10},1,50)}
+ local cfg=C.sanitize({upgradeCaps='1'});local e=makeAuto(C,cfg,C.logger());assert(e:arm(s));assert(not e:tick(s))
+ cfg=C.sanitize({upgradeWaves='4'});e=makeAuto(C,cfg,C.logger());assert(e:arm(s));assert(not e:tick(s));s.wave=4;assert(e:tick(s).kind=='upgrade')
+end)
+check('unsupported hotbar slot never aliases a supported slot policy',function()
+ local s=snapshot();s.roster[1].slot=7;local e=engine();assert(not e:arm(s))
 end)
 print('All '..n..' autoplay tests passed')

@@ -48,11 +48,28 @@ return function(C,io,env,identity,clock)
                 d[k]=v[k]
             end
         end
-        for _,k in ipairs({'openChests','replayFree','startWaves','nextStory'}) do
+        for _,k in ipairs({'openChests','replayFree','startWaves','nextStory','shrines'}) do
             if v[k]~=nil then
                 if type(v[k])~='boolean' then return nil,'invalid checkpoint '..k end
                 d[k]=v[k]
             end
+        end
+        for _,k in ipairs({'shrineItems','budgetId','macroName','macroSignature'}) do
+            if v[k]~=nil then
+                if type(v[k])~='string' or #v[k]>200 or v[k]:find('%c') then return nil,'invalid checkpoint '..k end
+                d[k]=v[k]
+            end
+        end
+        if v.macroRoster~=nil then
+            if type(v.macroRoster)~='table' or #v.macroRoster<1 or #v.macroRoster>6 then return nil,'invalid macro roster approval' end
+            d.macroRoster={};local seen={};local count=0
+            for k,r in pairs(v.macroRoster) do
+                count+=1
+                if not integer(k,1) or k>#v.macroRoster or type(r)~='table' or not integer(r.slot,1) or r.slot>6 or seen[r.slot]
+                    or not text(r.id,100) or not text(r.uuid,128) then return nil,'invalid macro roster approval' end
+                seen[r.slot]=true;d.macroRoster[k]={slot=r.slot,id=r.id,uuid=r.uuid}
+            end
+            if count~=#v.macroRoster then return nil,'sparse macro roster approval' end
         end
         return d
     end

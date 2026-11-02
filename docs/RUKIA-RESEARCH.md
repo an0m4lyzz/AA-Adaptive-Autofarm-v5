@@ -70,3 +70,7 @@ Check each row in the current Evolve menu. These are Star Fruits, not evidence o
 5. **Evolve manually:** check selected copy and current recipe, then inspect trait, raw stats and grades again afterward.
 
 No current clear times, success rates, yields or team were available. The software cannot rank a proven optimal live stage from those unknowns. Prefer successful clears with a verified needed reward, compare measured yield/time, and stop when the selected goal is observed.
+
+## Recheck November 2, 2026 (Manila)
+
+The official experience listing still advertises UPD 21. Fresh search results included an older page describing the original summonable Snow Reaper and stale Update 21 release speculation that contradicts the official listing. Neither establishes the secret War/Final reward table. No new rate, pity, key price, trait pool, stat boundary or evolution cost was promoted to verified data. The bounded capture exports only named observed fields; a current in-game reward/evolution/price receipt remains the missing evidence for paid progression adapters.

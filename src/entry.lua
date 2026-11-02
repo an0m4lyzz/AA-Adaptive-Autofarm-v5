@@ -8,6 +8,18 @@ local makeDungeon=require('./dungeon')
 local makeNavigation=require('./navigation')
 local makeSession=require('./session')
 local makeRuntime=require('./runtime')
+local K=require('./contracts')
+local makeEvidence=require('./evidence')
+local makeBudget=require('./budget')
+local makeActions=require('./actions')
+local makeThreats=require('./threats')
+local catalog=require('./catalog')
+local makeProgression=require('./progression')
+local makeMacro=require('./macro')
+local makeSettings=require('./settings')
+local makePerformance=require('./performance')
+local makeReports=require('./reports')
+local features=require('./features')
 local env=(type(getgenv)=='function' and getgenv()) or _G
 local deadline=os.clock()+30
 while not game:IsLoaded() and os.clock()<deadline do task.wait(.1) end
@@ -26,6 +38,8 @@ local filename='K_AA_Rukia_v6_'..LP.UserId..'.json'
 local reportFile='K_AA_Rukia_v6_Report_'..LP.UserId..'.txt'
 local markerFile='K_AA_Rukia_v6_Session_'..LP.UserId..'.json'
 local followFile='K_AA_Rukia_v6_Follow_'..LP.UserId..'.json'
+local budgetFile='K_AA_Rukia_v7_Budget_'..LP.UserId..'.json'
+local runStateFile='K_AA_v8_Runs_'..LP.UserId..'.json'
 local function readJSON(name)
     if type(readfile)~='function' then return nil end
     local ok,raw=pcall(readfile,name)
@@ -37,6 +51,7 @@ local function writeJSONVerified(name,value)
     if type(writefile)~='function' or type(readfile)~='function' then return false end
     return pcall(function()
         local raw=HTTP:JSONEncode(value)
+        assert(#raw<=262144,'Local JSON exceeds256 KiB')
         writefile(name,raw)
         assert(readfile(name)==raw,'Local write could not be verified')
     end)
@@ -54,6 +69,41 @@ app.trial=makeTrial(C,cfg,log);app.trialQuotes={}
 app.team=makeTeam(C,cfg,log)
 app.recorder=C.recorder(log)
 app.adapter=makeAdapter(C,env,cfg,log)
+app.evidence=makeEvidence(K)
+app.evidence.register({id='combat',schema='native-v1',requiredFields={'roster','towers'},status='offline'})
+app.evidence.register({id='dungeon',schema='native-v1',requiredFields={'dungeon'},status='offline'})
+app.evidence.register({id='flow',schema='native-v1',requiredFields={'flow'},status='offline'})
+local budgetStorageKnown=false
+app.budget=makeBudget(K,{write=function(value) return writeJSONVerified(budgetFile,value) end,
+    canPay=function() return budgetStorageKnown and type(readfile)=='function' and type(writefile)=='function' end},
+    {accountId=LP.UserId,universeId=game.GameId},os.time)
+local previousBudget=readJSON(budgetFile)
+if previousBudget then
+    budgetStorageKnown=app.budget.restore(previousBudget,{accountId=LP.UserId,universeId=game.GameId})==true
+    app.budget.frozen=not budgetStorageKnown
+elseif type(readfile)=='function' then
+    local ok,raw=pcall(readfile,budgetFile)
+    local existsOK,exists=false,false
+    if type(isfile)=='function' then existsOK,exists=pcall(isfile,budgetFile) end
+    budgetStorageKnown=not (ok and raw~=nil) and existsOK and exists==false
+    app.budget.frozen=not budgetStorageKnown
+else app.budget.frozen=true
+end
+app.actionSerial=0;app.actionPrefix=tostring({});app.actionReceipts={}
+app.threats=makeThreats(C)
+app.progression=makeProgression(C);app.catalog=catalog
+app.macro=makeMacro(C,cfg,log)
+app.settings=makeSettings(C);app.performance=makePerformance()
+app.reports=makeReports(C,{start=function(url,message,done)
+    task.spawn(function()
+        local requestFn=request or http_request or (type(syn)=='table' and syn.request)
+        if type(requestFn)~='function' then done(nil);return end
+        local ok,response=pcall(requestFn,{Url=url,Method='POST',Headers={['Content-Type']='application/json'},Body=HTTP:JSONEncode({content=message})})
+        done(ok and type(response)=='table' and tonumber(response.StatusCode or response.Status) or nil)
+    end)
+end})
+local oldRuns=readJSON(runStateFile)
+if oldRuns and oldRuns.userId==LP.UserId and oldRuns.universeId==game.GameId then app.reports:restore(oldRuns.stats) end
 app.native=makeRuntime(C,makeAuto,makeDungeon,cfg,log)
 app.navigation=makeNavigation(C,game:GetService('Workspace'),game:GetService('ReplicatedStorage'),log)
 app.session=makeSession(C,{
@@ -69,6 +119,271 @@ app.followMarker,app.resumeCandidate=app.session:load()
 cfg.autoFollow=app.session.following
 app.resumeEarliest=os.clock()+10;app.resumeDeadline=os.clock()+40;app.resumePlans=0
 local function fmt(x) return x==nil and '?' or tostring(x) end
+function app:observation(s)
+    s=s or self.snapshot or {}
+    local context={accountId=LP.UserId,universeId=game.GameId,jobId=game.JobId,
+        roundId=tostring(s.run or 'unknown'),stageId=s.stage or 'unknown',mode=s.mode or 'unknown',epoch=0}
+    local v={now=s.now,context=context,evidence={},roster=s.roster,towers=s.units,dungeon=s.dungeon,
+        account={wallet=s.wallet,resources=s.resources,owned=s.owned,ownershipComplete=false},
+        flow={wave=s.wave,outcome=s.outcome,started=s.started},battlefield={pathSamples=s.pathSamples},
+        threats=self.threats.summarize({enemies=s.enemyUnits,enemiesComplete=s.enemiesComplete})}
+    v.evidence.flow={source='native round observer',schema='native-v1',observedAt=s.now,
+        context=K.copy(context),scope='round',complete=s.stageVerified==true and s.modeVerified==true}
+    for key,info in pairs({roster={s.rosterAt,s.rosterComplete},towers={s.now,s.unitsComplete},
+        dungeon={s.dungeonAt,s.dungeon and s.dungeon.valid},account={s.ownedAt,false}}) do
+        v.evidence[key]={source='existing native observer',schema='native-v1',observedAt=info[1],
+            context=K.copy(context),scope=key=='account' and 'account' or 'round',complete=info[2]==true}
+    end
+    return v
+end
+function app:makeActions()
+    self.actions=makeActions(K,self.evidence,self.budget,{
+        send=function(intent)
+            local sent,why,token=self.adapter:dispatch(intent.native)
+            self.actionFeedbackToken=token;return sent,why
+        end,
+        verify=function(intent) return self.actionReceipts[intent.id] end})
+end
+function app:featureStatusText()
+    local counts={offline=0,partial=0,blocked=0};local out={}
+    for _,f in ipairs(features) do counts[f.status]+=1;out[#out+1]=f.id..' / '..f.status..' / '..f.label end
+    return 'FEATURE EVIDENCE / '..#features..' groups\nOffline tested '..counts.offline..' | partial '..counts.partial..' | blocked '..counts.blocked..
+        '\nLive passed: 0 in this update. Offline status does not certify live play.\n'..table.concat(out,'\n')
+end
+function app:resetReportTotals()
+    if self.native.armed then self:notice('Stop Auto before resetting report totals');return end
+    self.reports:restore({wins=0,losses=0,unknown=0,outcomes={},order={}})
+    writeJSONVerified(runStateFile,{userId=LP.UserId,universeId=game.GameId,stats=self.reports:checkpoint()})
+    self:notice('Retained report totals reset; spending and run limits are unchanged')
+end
+function app:dungeonBudgetText()
+    local pending=0;for _,r in pairs(self.budget.state.reservations) do if r.sent and next(r.cost)~=nil then pending+=1 end end
+    return 'Shared Dungeon coin ledger: spent '..tostring(self.budget.state.spent.DungeonCoins or 0)..
+        ' / cap '..tostring(self.budget.state.caps.DungeonCoins or 0)..' | remaining '..self.budget.remaining('DungeonCoins')..
+        '\nOutstanding account debits: '..pending..
+        (self.budget.frozen and '\nStored ledger unverified/unavailable: spending blocked until reconciled' or '')
+end
+function app:reviewDungeonBudget()
+    if self.native.armed then self:notice('Stop Auto before reviewing a new spending allowance');return false end
+    local view=self:observation();self.actionSerial+=1
+    local preview=self.budget.review({id=self.actionPrefix..':review:'..self.actionSerial,caps={DungeonCoins=cfg.dungeonShopCap},
+        allowedOps={dungeon=true},expires=os.time()+cfg.maxSeconds},view)
+    local grant,why=self.budget.grant(preview,true)
+    self:notice(grant and 'New explicit Dungeon coin allowance recorded; Auto remains OFF' or tostring(why or 'Budget grant failed'))
+    return grant~=nil
+end
+function app:configureWebhook(url)
+    if type(url)~='string' or #url>300 or not url:match('^https://discord%.com/api/webhooks/[%w_%-]+/[%w_%-]+$') then
+        self:notice('Enter a valid Discord webhook URL; it is retained only in this session');return false
+    end
+    self.reports:revokeNotifications();self.notificationEnabled=false;self.notificationURL=url
+    self:notice('Destination held in memory; sending remains OFF');return true
+end
+function app:toggleNotifications()
+    if self.notificationEnabled then
+        self.notificationEnabled=false;self.reports:revokeNotifications();self:notice('Notifications disabled; already-sent HTTP cannot be cancelled');return
+    end
+    if not self.notificationURL then self:notice('Set a destination first');return end
+    self.notificationEnabled=true;self:notice('Match/chest notifications explicitly enabled for this session')
+end
+function app:testNotification()
+    if not self.notificationURL then self:notice('Set a destination first');return end
+    self.reports:queueNotification({id='test:'..tostring(os.clock()),text='[K] AA notification test; no inventory or account identifiers included'},
+        {enabled=true,url=self.notificationURL})
+    self:notice('One explicit test queued')
+end
+function app:applyPortableSettings(data)
+    local result=self.settings.validate(data)
+    if not result.valid then self:notice(result.errors);return false end
+    self:stopNative('Portable settings applied');self:stopTeam('Portable settings applied')
+    self.engine:stop('Portable settings applied','IDLE');self.trial:cancel('Portable settings applied')
+    for key in pairs(C.defaults) do cfg[key]=result.settings[key] end
+    self:applyLocalOptions();self:saveSettings();self:notice('Validated preferences applied; grants and automation remain OFF');return true
+end
+function app:importSettings()
+    if type(getclipboard)~='function' then self:notice('Clipboard read unavailable; use named local profiles');return false end
+    local ok,raw=pcall(getclipboard)
+    if not ok or type(raw)~='string' or #raw>65536 then self:notice('Settings clipboard missing or oversized');return false end
+    local parsed,data=pcall(function() return HTTP:JSONDecode(raw) end)
+    if not parsed then self:notice('Settings JSON is invalid');return false end
+    return self:applyPortableSettings(data)
+end
+function app:saveProfile()
+    if not self.settings.name(cfg.profileName) then self:notice('Invalid profile name');return false end
+    local path='K_AA_v8_Profile_'..LP.UserId..'_'..cfg.profileName..'.json'
+    local old=readJSON(path)
+    if old and not writeJSONVerified(path..'.bak',old) then self:notice('Profile backup failed; original retained');return false end
+    local ok=writeJSONVerified(path,self.settings.export(cfg));self:notice(ok and 'Named profile saved' or 'Profile write failed');return ok
+end
+function app:loadProfile()
+    if not self.settings.name(cfg.profileName) then return false end
+    local data=readJSON('K_AA_v8_Profile_'..LP.UserId..'_'..cfg.profileName..'.json')
+    return self:applyPortableSettings(data)
+end
+function app:applyLocalOptions()
+    local effects={};local light
+    pcall(function()
+        light=game:GetService('Lighting')
+        if light then
+            for i,x in ipairs(light:GetChildren()) do
+                if i>64 then break end
+                if x:IsA('BloomEffect') or x:IsA('DepthOfFieldEffect') or x:IsA('SunRaysEffect') or x:IsA('BlurEffect') then effects[#effects+1]=x end
+            end
+        end
+    end)
+    local result=self.performance.apply(cfg.qualityProfile,{light=light,effects=effects})
+    self.localStatus=result.reason
+    if self.idleConnection then self.idleConnection:Disconnect();self.idleConnection=nil end
+    if cfg.antiAfk==true and LP.Idled then
+        local ok,connection=pcall(function() return LP.Idled:Connect(function()
+            if not self.alive or cfg.antiAfk~=true or not self.native.armed or self.native.pending or self.adapter:busy() then return end
+            local success=pcall(function()
+                local input=game:GetService('VirtualUser');input:CaptureController();input:ClickButton2(Vector2.new())
+            end)
+            if not success then cfg.antiAfk=false;self:notice('Anti-AFK input unsupported; disabled') end
+        end) end)
+        if ok then self.idleConnection=connection else self.localStatus=self.localStatus..'; anti-AFK unavailable' end
+    end
+    if cfg.cameraZoom>0 and C.finite(LP.CameraMaxZoomDistance) then
+        if not self.zoomOriginal then self.zoomOriginal=LP.CameraMaxZoomDistance end
+        local ok=pcall(function() LP.CameraMaxZoomDistance=cfg.cameraZoom end);if ok then self.zoomApplied=cfg.cameraZoom end
+    elseif self.zoomApplied then
+        pcall(function()if LP.CameraMaxZoomDistance==self.zoomApplied then LP.CameraMaxZoomDistance=self.zoomOriginal end end)
+        self.zoomApplied=nil;self.zoomOriginal=nil
+    end
+end
+function app:openNativeScreen()
+    local gui=LP:FindFirstChildOfClass('PlayerGui');local screen=gui and gui:FindFirstChild(cfg.nativeScreen)
+    if not screen or not screen:IsA('ScreenGui') then self:notice('Native screen unavailable; open it with the game button');return end
+    local ok=pcall(function() screen.Enabled=true end)
+    self:notice(ok and 'Native screen opened; no account action sent' or 'Native screen could not be opened')
+end
+local function macroFile(name)
+    if type(name)=='string' and #name<=40 and name:match('^[%w_%-]+$') then return 'K_AA_v8_Macro_'..LP.UserId..'_'..name..'.json' end
+end
+function app:startMacroRecording()
+    local ok,why=self.macro:startRecording(self.snapshot or {},cfg.macroName)
+    self:notice(ok and 'Recording exact native actions; manual game clicks are not intercepted' or why);return ok
+end
+function app:finishMacroRecording()
+    self.macro.recording=false
+    local d=self.macro.data;local v=self.macro:validate(d)
+    local ok=v.valid and macroFile(d.name) and writeJSONVerified(macroFile(d.name),d)
+    self:notice(ok and 'Portable macro saved: '..d.name or 'Macro save failed: '..tostring(v.errors));return ok==true
+end
+function app:loadMacro(name)
+    name=name or cfg.macroName
+    if self.native.armed or self.macro.recording then self:notice('Stop playback/recording before loading another macro');return false end
+    local path=macroFile(name);local d=path and readJSON(path)
+    local result=self.macro:validate(d)
+    if not result.valid then self:notice(result.errors);return false end
+    self.macro.data=d;self:notice('Validated macro loaded: '..name);return true
+end
+function app:copyMacro()
+    local v=self.macro:validate(self.macro.data)
+    if not v.valid then self:notice(v.errors);return end
+    if type(setclipboard)=='function' then pcall(setclipboard,HTTP:JSONEncode(self.macro.data));self:notice('Data-only macro copied') end
+end
+function app:beginManualMacro()
+    if self.native.armed or not self.macro.recording then self:notice('Start macro recording with Auto OFF first');return end
+    local s=self.adapter:observe(os.clock());self.manualMacroBefore=table.clone(s);self.manualMacroBefore.units={}
+    for i,u in ipairs(s.units or {}) do
+        local copy=table.clone(u);if type(u.pos)=='table' then copy.pos=table.clone(u.pos) end;self.manualMacroBefore.units[i]=copy
+    end
+    self:notice('Before-state saved; make exactly one manual '..cfg.manualMacroKind..', then capture after')
+end
+function app:endManualMacro()
+    if self.native.armed or not self.macro.recording or not self.manualMacroBefore then self:notice('Record a before-state with Auto OFF first');return end
+    local s=self.adapter:observe(os.clock());local p,why=self.macro:captureManual(self.manualMacroBefore,s,cfg.manualMacroKind)
+    self.manualMacroBefore=nil
+    if p then local ok,reason=self.macro:record(p,s);self:notice(ok and 'One observed manual change recorded' or reason)
+    else self:notice(why) end
+end
+function app:renameMacro()
+    if self.native.armed or self.macro.recording or not self.macro:validate(self.macro.data).valid then self:notice('Load a valid stopped macro first');return false end
+    local old=macroFile(self.macro.data.name);local new=macroFile(cfg.macroName)
+    if not new or old==new then self:notice('Set a different valid macro name first');return false end
+    if type(isfile)~='function' then self:notice('Rename needs an existence check; save a named copy instead');return false end
+    local checked,occupied=pcall(isfile,new)
+    if not checked or type(occupied)~='boolean' then self:notice('Destination existence unknown; rename stopped');return false end
+    if occupied then self:notice('Destination macro already exists; choose an unused name');return false end
+    local data=K.copy(self.macro.data);data.name=cfg.macroName
+    if not writeJSONVerified(new,data) then self:notice('New macro write failed; old macro retained');return false end
+    self.macro.data=data
+    if type(delfile)=='function' then pcall(delfile,old);self:notice('Macro saved under the new name; verify old-file deletion if needed')
+    else self:notice('New named copy saved; executor cannot delete the old file') end
+    return true
+end
+function app:deleteMacro()
+    if self.native.armed or self.macro.recording then self:notice('Stop macro playback/recording before delete');return false end
+    local path=macroFile(cfg.macroName);local data=path and readJSON(path)
+    if not data or type(delfile)~='function' then self:notice('Named macro or delete capability unavailable');return false end
+    if not writeJSONVerified(path..'.bak',data) then self:notice('Backup failed; macro retained');return false end
+    local ok=pcall(delfile,path)
+    if ok and readJSON(path)==nil then self.macro.data=nil;self:notice('Named macro deleted; .bak backup retained');return true end
+    self:notice('Deletion unconfirmed; inspect local file');return false
+end
+function app:importMacro()
+    if self.native.armed or self.macro.recording then self:notice('Stop playback/recording before import');return false end
+    if type(getclipboard)~='function' then self:notice('Clipboard read unavailable; put validated JSON in the named local macro file');return false end
+    local ok,raw=pcall(getclipboard)
+    if not ok or type(raw)~='string' or #raw>262144 then self:notice('Macro clipboard data unavailable/oversized');return false end
+    local parsed,d=pcall(function() return HTTP:JSONDecode(raw) end)
+    local valid=parsed and self.macro:validate(d,#raw)
+    if not valid or not valid.valid then self:notice('Macro rejected; no code or unknown format accepted');return false end
+    self.macro.data=d;cfg.macroName=d.name;return self:finishMacroRecording()
+end
+function app:toggleMacro()
+    if self.native.armed then self:stopNative('Stopped before macro policy change');return end
+    if not self.macro:validate(self.macro.data).valid and not self:loadMacro() then return end
+    self.macro.rosterBindings=nil;self.macro.resumeBindings=nil -- this button is a new explicit playback approval
+    self.startingMacro=true;cfg.macroSession=true
+    self.native=makeRuntime(C,function() return self.macro end,makeDungeon,cfg,log)
+    self:toggleNative();self.startingMacro=false
+end
+function app:sendAction(action)
+    local s=self.snapshot or {};local view=self:observation(s)
+    if self.actions and self.actions.pending() then
+        local p=self.actions.pending()
+        if next(p.cost)==nil and not K.same(p.context,view.context) and s.mutationFence~=true and s.transportBlocked~=true then
+            if not self.budget.invalidateRound(view.context) then return false,'Round ledger invalidation failed' end
+            self:makeActions()
+        end
+    end
+    if not self.actions then self:makeActions() end
+    action.macro=cfg.macroSession==true and self.native.armed and self.native.auto==self.macro
+    local paid=action.kind=='dungeon' and action.name=='dungeon_buy_shop'
+    local supported=table.find({'place','upgrade','priority','ability','skip','sell','start','lobby','next','replay'},action.kind)~=nil
+        or (action.kind=='dungeon' and table.find({'dungeon_enter_room','dungeon_continue_shop','dungeon_open_chest','dungeon_buy_shop','dungeon_shrine_accept'},action.name)~=nil)
+    if not supported then return false,'Action has no verified native receipt adapter' end
+    local cost={}
+    if paid then
+        local price=action.expected and action.expected.price
+        if not K.finite(price) or price<0 then return false,'Dungeon effective price unavailable' end
+        cost.DungeonCoins=price
+        if not self.budget.state.grant then
+            local preview=self.budget.review({id=self.actionPrefix,caps={DungeonCoins=cfg.dungeonShopCap},
+                allowedOps={dungeon=true},expires=os.time()+math.min(7200,cfg.maxSeconds)},view)
+            if not self.budget.grant(preview,true) then return false,'Dungeon budget needs reconciliation' end
+        end
+    end
+    self.actionSerial+=1
+    local intent={id=self.actionPrefix..':'..self.actionSerial,capabilityId=action.kind=='dungeon' and 'dungeon'
+        or (table.find({'place','upgrade','priority','ability','sell'},action.kind) and 'combat' or 'flow'),kind=action.kind,
+        context=K.copy(view.context),cost=cost,deadline=(s.now or os.clock())+20,expected={kind=action.kind},
+        permissionId=self.budget.state.grant and self.budget.state.grant.id,native=action}
+    local result=self.actions.submit(intent,view,{})
+    if result.kind~='action' then return false,result.reason end
+    self.lastIntentId=intent.id;return true,nil,self.actionFeedbackToken
+end
+function app:captureGameData()
+    self.snapshot=self.adapter:observe(os.clock())
+    self.lastCapture=self.evidence.capture(self:observation(),{bytes=60000,nodes=1800})
+    local raw=HTTP:JSONEncode(self.lastCapture)
+    if #raw>65536 then self:notice('Capture too large; no oversized export');return end
+    if type(setclipboard)=='function' then pcall(setclipboard,raw) end
+    self:notice('One bounded data capture copied; no actions sent. Missing fields stay unknown.')
+end
 function app:notice(message)
     self.status=tostring(message):sub(1,400);self.log:add('STATUS',self.status)
 end
@@ -89,14 +404,35 @@ function app:ownershipText()
 end
 function app:objectiveText()
     if not self.snapshot then return 'Waiting for observation' end
-    local title,detail=C.plan(self.snapshot,self.cfg)
-    return title..'\n'..detail..'\nStop goal: '..self.cfg.goal
+    local p=self.progression.plan(self.snapshot,self.catalog,{kind=cfg.goal,selectedUuid=cfg.selectedUuid,
+        trait=cfg.targetTrait,grade=cfg.targetGrade})
+    return p.objective..'\n'..tostring(p.stop and 'GOAL OBSERVED: no further farming needed' or p.blocker or 'Current route ready')..
+        '\nStop goal: '..cfg.goal..'\nCurrent stage combat does not itself verify a Rukia reward route.'
 end
 function app:walletText()
     local s=self.snapshot or {};local w=s.wallet or {}
     return 'Observed account balances\nGold: '..fmt(w.Gold)..' | Gems: '..fmt(w.Gems)..
         '\nSummerPearls: '..fmt(w.SummerPearls)..
         '\nMatch cash: '..fmt(s.cash)..' | source: '..fmt(s.cashSource)
+end
+function app:dungeonInfo()
+    local d=(self.snapshot or {}).dungeon
+    if not d or not d.valid then return 'DUNGEON INFO: '..tostring(d and d.reason or 'Current schema unavailable') end
+    local out={'DUNGEON / '..d.phase.kind..' | depth '..fmt(d.depth)..' / '..fmt(d.maxRooms),
+        'Coins '..fmt(d.money)..' | normal chests '..fmt(d.normalChests)..' | rare '..fmt(d.rareChests)}
+    for _,choice in ipairs({'1','2','3'}) do
+        local room=d.rooms[choice]
+        if room then
+            local names={};for id,name in pairs({['0']='Curse',['1']='Shop',['2']='Hoard',['3']='Rare chest',['4']='Chest',['5']='Boss',['6']='Open chest',['7']='Shrine'}) do
+                if room.flags[id] then names[#names+1]=name end
+            end
+            table.sort(names);out[#out+1]='Choice '..choice..' / depth '..room.depth..': '..table.concat(names,', ')
+        end
+    end
+    for _,offer in ipairs(d.phase.offers or {}) do
+        out[#out+1]=tostring(offer.id)..' / '..tostring(offer.name or '?')..' / coins '..fmt(offer.price)..'\n'..tostring(offer.description or 'Effect not exposed')
+    end
+    return table.concat(out,'\n'):sub(1,5000)
 end
 function app:traitText()
     local u=self:unit();local r=(self.snapshot or {}).resources or {}
@@ -152,6 +488,7 @@ function app:smartText()
         '\nMap planner: '..fmt(self.planStatus)
 end
 function app:stopNative(reason)
+    cfg.macroSession=false
     self.planEpoch=(self.planEpoch or 0)+1
     local unresolved=self.native.pending~=nil or self.adapter:mutationFenced()
     self.native:stop(reason or 'Stopped by user','IDLE');cfg.dungeonConsent=false
@@ -169,6 +506,7 @@ function app:toggleFollow()
     self:notice(ok and self.session:text() or tostring(why))
 end
 function app:prepareNative(s)
+    if self.native.auto==self.macro then return s end
     if not s.inMatch or s.resultVisible then return s end
     if not s.stageVerified or not s.modeVerified then return nil,'Current stage/mode not observed' end
     local signature={}
@@ -200,6 +538,9 @@ function app:applyClearFirst()
     cfg.dungeonPreset='Safe';cfg.dungeonShopCap=0;cfg.dungeonOpenChests=false
     cfg.replay=false;cfg.replayFreeConfirmed=false;cfg.autoNextStory=false;cfg.maxRuns=1
     cfg.autoDistance=50;cfg.autoGround=60;cfg.autoHill=80
+    cfg.placeCaps='';cfg.upgradeCaps='';cfg.placeWaves='';cfg.upgradeWaves='';cfg.slotOrder='1,2,3,4,5,6'
+    cfg.autoSkip=false;cfg.sellAllWave=0;cfg.sellFarmWave=0;cfg.autoAbilities=false;cfg.autoBossTarget='GameDefault'
+    cfg.upgradeBetweenPlacements=false;cfg.focusFarm=false;cfg.dungeonShrines=false;cfg.finishDelay=0
     self.planUntil=nil
     local savedOK=self:saveSettings()
     self:notice('Clear-first setup applied'..(savedOK and ' and saved' or ' for this session; saving failed')..
@@ -207,6 +548,9 @@ function app:applyClearFirst()
 end
 function app:toggleNative()
     if self.native.armed then self:stopNative('Stopped by user');self:notice('Smart Auto stopped');return end
+    if self.native.auto==self.macro and not self.startingMacro then
+        cfg.macroSession=false;self.native=makeRuntime(C,makeAuto,makeDungeon,cfg,log)
+    end
     self:stopTeam('Smart Auto requested');self.engine:stop('Smart Auto requested','IDLE')
     self.trial:cancel('Smart Auto requested')
     self.snapshot=self.adapter:observe(os.clock())
@@ -238,7 +582,12 @@ function app:checkpointNative(action)
         mode=self.native.mode or '',deadline=self.nativeDeadline,
         checkpoint={spent=self.native.route.spent,shopCap=cfg.dungeonShopCap,runs=self.native.runs,
             remainingRuns=math.max(0,cfg.maxRuns-self.native.runs),openChests=cfg.dungeonOpenChests,
-            replayFree=cfg.replayFreeConfirmed,startWaves=cfg.autoStartWaves,nextStory=cfg.autoNextStory}})
+            replayFree=cfg.replayFreeConfirmed,startWaves=cfg.autoStartWaves,nextStory=cfg.autoNextStory,
+            shrines=cfg.dungeonShrines,shrineItems=cfg.dungeonShrineItems,
+            budgetId=self.budget.state.grant and self.budget.state.grant.id,
+            macroName=self.native.auto==self.macro and self.macro.data and self.macro.data.name or nil,
+            macroSignature=self.native.auto==self.macro and self.macro:signature(self.macro.data) or nil,
+            macroRoster=self.native.auto==self.macro and self.macro:rosterCheckpoint() or nil}})
 end
 function app:resumeNative(s)
     if not self.resumeCandidate then return end
@@ -246,6 +595,16 @@ function app:resumeNative(s)
         self:stopNative('Teleport continuation readiness timed out');self:notice('UI restored; auto resume could not verify the new round');return
     end
     if os.clock()<self.resumeEarliest then return end
+    local policy=(self.followMarker or {}).checkpoint or {}
+    if policy.macroName and not self.resumePolicyPrepared then
+        self.resumePolicyPrepared=true
+        if not self:loadMacro(policy.macroName) or self.macro:signature(self.macro.data)~=policy.macroSignature then
+            self:stopNative('Original macro missing/changed after teleport');return
+        end
+        if type(policy.macroRoster)~='table' then self:stopNative('Original macro roster approval missing; re-arm manually');return end
+        self.macro.resumeBindings=policy.macroRoster
+        cfg.macroSession=true;self.native=makeRuntime(C,function() return self.macro end,makeDungeon,cfg,log)
+    end
     if not self.resumeRead then self.resumeRead=true;self.adapter:startClientCache(true);return end
     if not self.adapter.cacheDone or not s.stageVerified or not s.modeVerified or s.rosterComplete~=true then return end
     if self.resumeNext and os.clock()<self.resumeNext then return end
@@ -260,7 +619,11 @@ function app:resumeNative(s)
     self.resumeCandidate=false
     local checkpoint=marker.checkpoint or {};local remaining=marker.deadline and marker.deadline-os.time()
     if not remaining or remaining<=0 then self:stopNative('Original session deadline expired');return end
+    if checkpoint.budgetId and (not self.budget.state.grant or self.budget.state.grant.id~=checkpoint.budgetId) then
+        self:stopNative('Original spending ledger missing or mismatched after teleport');return
+    end
     cfg.dungeonShopCap=checkpoint.shopCap or 0;cfg.dungeonOpenChests=checkpoint.openChests==true
+    cfg.dungeonShrines=checkpoint.shrines==true;cfg.dungeonShrineItems=checkpoint.shrineItems or ''
     cfg.autoStartWaves=checkpoint.startWaves==true;cfg.dungeonConsent=ready.mode=='Dungeon'
     cfg.autoNextStory=checkpoint.nextStory==true
     if marker.expected.kind=='replay' or marker.expected.kind=='next_story' then
@@ -317,21 +680,24 @@ function app:nextRukia()
     self.engine:stop('Selected unit changed','IDLE');self:notice('Selected observed Rukia '..(idx%#list+1))
 end
 function app:set(key,v)
-    self:stopNative('Settings changed')
-    self:stopTeam('Settings changed')
-    self.trial:cancel('Settings changed; test cancelled')
-    if self.engine.armed then self.engine:stop('Settings changed; review before rearming','IDLE') end
-    local limits={reserve={0,1000000},maxRuns={1,100},maxSeconds={30,7200},traitCap={0,1000},statCap={0,1000},
-        autoDistance={0,100},autoGround={0,100},autoHill={0,100},dungeonShopCap={0,100000}}
-    if limits[key] then
-        if not C.finite(v) then self:notice('Enter a finite number');return end
-        cfg[key]=math.clamp(math.floor(v),limits[key][1],limits[key][2])
-    elseif table.find({'inventoryPath','resourcePath','cashPath','recordCosts'},key) and type(v)=='string' then
-        cfg[key]=v:sub(1,200);self.adapter.nextInventory=0
+    if C.defaults[key]==nil or type(v)~=type(C.defaults[key]) or (type(v)=='number' and not C.finite(v)) then
+        self:notice('Enter a valid setting value');return
     end
+    local cosmetic=table.find({'qualityProfile','blackScreen','antiAfk','uiTheme','uiScale','cameraZoom','nativeScreen'},key)
+    if not cosmetic then
+        self:stopNative('Settings changed');self:stopTeam('Settings changed');self.trial:cancel('Settings changed; test cancelled')
+        if self.engine.armed then self.engine:stop('Settings changed; review before rearming','IDLE') end
+    end
+    local proposed=table.clone(cfg);proposed[key]=v;local safe=C.sanitize(proposed)
+    if key=='antiAfk' then cfg[key]=v else cfg[key]=safe[key] end
+    if key=='inventoryPath' or key=='resourcePath' or key=='cashPath' then self.adapter.nextInventory=0 end
+    if cosmetic then self:applyLocalOptions() end
     self:saveSettings()
 end
 function app:cycle(key,values)
+    if table.find({'qualityProfile','uiTheme','nativeScreen'},key) then
+        local index=table.find(values,cfg[key]) or 0;self:set(key,values[index%#values+1]);return
+    end
     self:stopNative('Objective or strategy changed')
     self:stopTeam('Target/mode changed')
     self.trial:cancel('Target/mode changed; test cancelled')
@@ -342,6 +708,7 @@ function app:cycle(key,values)
     self:saveSettings()
 end
 function app:toggle(key)
+    if key=='blackScreen' or key=='antiAfk' then self:set(key,not cfg[key]);return end
     self:stopNative('Settings changed')
     self:stopTeam('Settings changed')
     self.trial:cancel('Settings changed; test cancelled')
@@ -417,7 +784,8 @@ function app:runTrial(kind)
     local action,why=self.trial:begin(kind,self.snapshot,self.trialProfile,self.trialQuotes[kind])
     if not action then self:notice(why);return end
     self.awaitTrialCopy=true
-    local sent,err,token=self.adapter:dispatch(action)
+    local sent,err,token=self:sendAction(action)
+    if sent and self.trial.pending then self.trial.pending.intentId=self.lastIntentId end
     if sent and self.trial.pending then self.trial.pending.feedbackToken=token end
     if not sent then self.trial:cancel('Test request not sent: '..tostring(err));self:notice(err)
     else self:notice('One test request sent; wait up to 8 seconds without manual placement/upgrades. Report copies automatically.') end
@@ -433,6 +801,21 @@ function app:tickController(controller,s,p)
         and ((controller.placements or 0)>placements or (controller.upgrades or 0)>upgrades
             or (controller.confirmations or 0)>confirmations) then
         self.adapter:confirmMutation(pending.feedbackToken)
+        self.reports:record({kind='ACTION OBSERVED',detail=pending.kind or pending.name or 'native action'})
+        if pending.expected and pending.expected.kind=='chest' then
+            self.reports:queueNotification({id='chest:'..tostring(pending.intentId),text='[K] Dungeon chest count change observed. Contents are unverified unless separately inspected.'},
+                {enabled=self.notificationEnabled==true,url=self.notificationURL})
+        end
+        if self.macro.recording and self.macro:recordable(pending.kind) then
+            local recorded,why=self.macro:record(pending,s)
+            if not recorded then self.macro.recording=false;self:notice('Macro recording stopped: '..tostring(why)) end
+        end
+        if pending.intentId and self.actions and self.actions.pending() then
+            local intent=self.actions.pending()
+            self.actionReceipts[pending.intentId]={intentId=pending.intentId,status='confirmed',proof=true,
+                context=K.copy(intent.context),debits=K.copy(intent.cost),observedAt=s.now}
+            self.actions.observe(self:observation(s));self.actionReceipts[pending.intentId]=nil
+        end
         if controller==self.native then
             local ok,why=self:checkpointNative(nil)
             if not ok then self:stopNative('Checkpoint confirmation failed: '..tostring(why)) end
@@ -496,6 +879,9 @@ function app:completeReport()
         self.trial:text(),
         self.team:text(s,self.teamProfile),
         self:smartText(),
+        self.reports:render(),self:featureStatusText(),
+        'Pending shared intent: '..tostring(self.actions and self.actions.pending() and self.actions.pending().kind or 'none')..
+            ' | notification transport: '..self.reports.notificationState,
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
         self.adapter:combatReport(s),
         self.adapter.cacheReport or 'CLIENT CACHE READER: not attempted; use RUKIA → READ CLIENT CACHE + COPY REPORT',
@@ -565,8 +951,7 @@ function app:copyTeamReport()
     else print(text);self:notice('Clipboard unavailable; Team report printed') end
 end
 function app:copyConfig()
-    local txt=HTTP:JSONEncode({cfg=cfg,profile=self.profile,trialProfile=self.trialProfile,teamProfile=self.teamProfile})
-    if type(setclipboard)=='function' then pcall(setclipboard,txt);self:notice('Configuration copied; includes unit UUIDs')
+    if type(setclipboard)=='function' then pcall(setclipboard,HTTP:JSONEncode(self.settings.export(cfg)));self:notice('Portable preferences copied; unit identities and grants omitted')
     else self:notice('Clipboard unavailable') end
 end
 function app:saveReport()
@@ -584,7 +969,9 @@ function app.stop(replacement)
         local revoked,why=app.session:close()
         if not revoked then warn('[K] Follow revocation failed: '..tostring(why)) end
     end
-    app.alive=false;app.adapter:close()
+    app.alive=false;app.adapter:close();app.performance.restore();app.reports:revokeNotifications();app.notificationURL=nil
+    if app.idleConnection then pcall(function()app.idleConnection:Disconnect()end);app.idleConnection=nil end
+    if app.zoomApplied then pcall(function()if LP.CameraMaxZoomDistance==app.zoomApplied then LP.CameraMaxZoomDistance=app.zoomOriginal end end) end
     if app.ui then app.ui:close() end
     if type(writefile)=='function' then
         pcall(writefile,reportFile,app:completeReport())
@@ -604,15 +991,25 @@ if legacy then
     app.legacySummary='v5 settings retained; '..count..' old profiles are unverified'
     if not saved.cfg and type(legacy.options)=='table' and type(legacy.options.upgrade)=='boolean' then cfg.upgrade=legacy.options.upgrade end
 else app.legacySummary='No readable v5 settings' end
-log:add('BOOT','v7 native adaptation; no GC/hook/global GUI scan; auto OFF unless verified opted-in continuation')
+log:add('BOOT','v8 native expansion; no GC/hook/global GUI scan; auto OFF unless verified opted-in continuation')
 local bootOK,bootErr=pcall(function()
-    app.snapshot=app.adapter:observe(os.clock());app.ui=makeUI(app)
+    app.snapshot=app.adapter:observe(os.clock());app.ui=makeUI(app);app:applyLocalOptions()
 end)
 if not bootOK then app:error(bootErr);app.stop();warn('[K] AA initialization failed: '..tostring(bootErr));return end
 task.spawn(function()
     while app.alive do
         local ok,err=pcall(function()
             local now=os.clock();local s=app.adapter:observe(now);app.snapshot=s
+            app.reports:tick(now)
+            if s.resultVisible then
+                local round=game.JobId..'/'..tostring(s.roundToken)..'/'..s.stage
+                if app.reports:outcome(round,s.outcome) then
+                    local savedRun=writeJSONVerified(runStateFile,{userId=LP.UserId,universeId=game.GameId,stats=app.reports:checkpoint()})
+                    if not savedRun then app.reports:record({kind='REPORT',detail='Aggregate persistence failed; current-injection counts remain in memory'}) end
+                    app.reports:queueNotification({id=round..'/'..tostring(s.outcome),text='[K] '..s.mode..' / '..s.stage..' / observed '..tostring(s.outcome)..'. No rewards inferred.'},
+                        {enabled=app.notificationEnabled==true,url=app.notificationURL})
+                end
+            end
             local failure=app.adapter:poll()
             if failure then app:stopNative(failure);app.engine:reject(failure);app.team:reject(failure);app.adapter:stopResultWatch();app.trial:cancel(failure);app:notice(failure) end
             if app.awaitCacheCopy and app.adapter.cacheDone then
@@ -630,6 +1027,10 @@ task.spawn(function()
                 app.awaitTrialCopy=false;app:copyCombatReport()
             end
             app:resumeNative(s)
+            if app.native.armed and not app.native.pending then
+                local goal=app.progression.plan(s,app.catalog,{kind=cfg.goal,selectedUuid=cfg.selectedUuid,trait=cfg.targetTrait,grade=cfg.targetGrade})
+                if goal.stop then app:stopNative(goal.objective);app:notice(goal.objective) end
+            end
             if app.native.armed then s=app.snapshot or s end
             local wasNative=app.native.armed
             if wasNative and not app.native.pending then
@@ -646,9 +1047,9 @@ task.spawn(function()
                 local checkpointOK,checkpointWhy=true,nil
                 if controller==app.native then checkpointOK,checkpointWhy=app:checkpointNative(request) end
                 local sent,why,token
-                if checkpointOK then sent,why,token=app.adapter:dispatch(request)
+                if checkpointOK then sent,why,token=app:sendAction(request)
                 else sent=false;why='Durable action checkpoint failed: '..tostring(checkpointWhy) end
-                if sent and controller.pending then controller.pending.feedbackToken=token end
+                if sent and controller.pending then controller.pending.feedbackToken=token;controller.pending.intentId=app.lastIntentId;controller.pending.macroWave=s.wave end
                 if not sent then
                     controller:reject(why)
                     if controller==app.native then app:stopNative(why) end

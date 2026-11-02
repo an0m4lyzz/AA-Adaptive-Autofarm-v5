@@ -1,14 +1,16 @@
 -- Pure native orchestration. Child readback is authoritative; one action at a time.
+local makeFlow=require('./flow')
 return function(C,makeAuto,makeDungeon,cfg,log)
     log=log or C.logger()
     local supported={Story=true,Dungeon=true,Infinite=true,Challenge=true,Raid=true,Legend=true,Portal=true}
     local r={auto=makeAuto(C,cfg,log),route=makeDungeon(C).engine(cfg,log),armed=false,
         state='IDLE',reason='Native Auto OFF',pending=nil,placements=0,upgrades=0,confirmations=0,
         runs=0,wins=0,losses=0,flowConfirmations=0}
+    r.extras=makeFlow(C,cfg)
     local function sync(self)
         self.placements=self.auto.placements;self.upgrades=self.auto.upgrades
-        self.confirmations=(self.auto.confirmations or 0)+self.route.confirmations+self.flowConfirmations
-        self.pending=self.flowPending or self.route.pending or self.auto.pending
+        self.confirmations=(self.auto.confirmations or 0)+self.route.confirmations+self.flowConfirmations+self.extras.confirmations
+        self.pending=self.flowPending or self.route.pending or self.auto.pending or self.extras.pending
     end
     local function identity(self,s)
         self.run=s.run;self.roundToken=s.roundToken;self.stage=s.stage;self.placeId=s.placeId;self.observedMode=s.mode
@@ -25,6 +27,7 @@ return function(C,makeAuto,makeDungeon,cfg,log)
         return nil
     end
     function r:stop(reason,state)
+        self.extras:stop(reason)
         self.auto:stop(reason,state);self.route:stop(reason,state)
         self.armed=false;self.flowPending=nil;self.pending=nil;self.state=state or 'BLOCKED';self.reason=tostring(reason)
         sync(self);log:add('NATIVE '..self.state,self.reason)
@@ -40,7 +43,7 @@ return function(C,makeAuto,makeDungeon,cfg,log)
     local function armCombat(self,s)
         if s.mode~=self.mode then self:stop('Unexpected combat mode after native transition');return false end
         if not self.auto:arm(s) then self:stop(self.auto.reason,self.auto.state);return false end
-        identity(self,s);self.waitingReset=nil;self.startAttempted=false;self.state='RUNNING';self.reason='Experimental native combat'
+        identity(self,s);self.extras:arm(s);self.finishAt=nil;self.waitingReset=nil;self.startAttempted=false;self.state='RUNNING';self.reason='Experimental native combat'
         return true
     end
     function r:arm(s)
@@ -164,6 +167,7 @@ return function(C,makeAuto,makeDungeon,cfg,log)
             sync(self);return a
         end
         if self.auto.pending then return childTick(self,self.auto,s) end
+        if self.extras.pending then return childTick(self,self.extras,s) end
         if s.transportBlocked or s.mutationFence then self:stop('Native mutation fence or outstanding request');return nil end
         if self.waitingReset then
             local wait=self.waitingReset
@@ -182,6 +186,8 @@ return function(C,makeAuto,makeDungeon,cfg,log)
         if s.resultVisible then
             self.auto:stop('Observed Victory','RESULT')
             if self.mode=='Dungeon' then return childTick(self,self.route,s) end
+            self.finishAt=self.finishAt or s.now
+            if s.now-self.finishAt<(cfg.finishDelay or 0) then self.state='WAITING';self.reason='Configured finish delay';return nil end
             if self.mode=='Story' and cfg.autoNextStory==true and self.runs<cfg.maxRuns then
                 if type(s.nextStoryId)~='string' or s.nextStoryId=='' or s.nextStoryId==s.stage then
                     self:stop('Next Story stage unavailable from loaded progression data');return nil
@@ -197,6 +203,13 @@ return function(C,makeAuto,makeDungeon,cfg,log)
         if self.mode=='Dungeon' and not self.auto.armed then return childTick(self,self.route,s) end
         if cfg.autoStartWaves==true and not self.startAttempted and s.started==false and s.voteStartFinished==false then
             self.startAttempted=true;return flow(self,s,'start',8,{kind='start',stage=s.stage,mode=s.mode,placeId=s.placeId})
+        end
+        local extra=childTick(self,self.extras,s)
+        if not self.armed or extra then return extra end
+        if self.extras.soldRoles.all then self.state='HOLDING';self.reason='Scheduled sale complete; holding until outcome';return nil end
+        if self.extras.soldRoles.farm then
+            s=table.clone(s);s.roster=table.clone(s.roster)
+            for i,u in ipairs(s.roster) do if u.role=='farm' then s.roster[i]=table.clone(u);s.roster[i].runtimeDisabled=true end end
         end
         return childTick(self,self.auto,s)
     end

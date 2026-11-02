@@ -1,6 +1,6 @@
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '7.0.0'
+C.version = '8.0.0'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -12,7 +12,12 @@ C.defaults = {goal='Acquire',targetTrait='Unique',targetGrade='SSS',reserve=0,ma
     mode='Dungeon',logDisk=false,selectedUuid='',recordCosts='',trialSlot=4,
     autoMethod='RoundRobin',autoDistance=50,autoGround=60,autoHill=80,autoFollow=false,
     autoStartWaves=false,autoReturnLobby=false,autoNextStory=false,autoTarget='GameDefault',autoUpgradeMethod='LowestLevel',
-    dungeonPreset='Safe',dungeonShopCap=0,dungeonConsent=false,dungeonOpenChests=false}
+    dungeonPreset='Safe',dungeonShopCap=0,dungeonConsent=false,dungeonOpenChests=false,
+    dungeonShrines=false,dungeonShrineItems='',dungeonBuyOrder='',
+    placeCaps='',upgradeCaps='',placeWaves='',upgradeWaves='',slotOrder='1,2,3,4,5,6',
+    autoAbilities=false,abilityGap=3,upgradeBetweenPlacements=false,focusFarm=false,autoBossTarget='GameDefault',
+    autoSkip=false,skipStopWave=0,sellAllWave=0,sellFarmWave=0,finishDelay=0,macroName='run',macroIgnoreTiming=false,manualMacroKind='place',
+    profileName='default',qualityProfile='Normal',blackScreen=false,antiAfk=false,uiTheme='Dark',uiScale=1,nativeScreen='collection',cameraZoom=0}
 function C.finite(x) return type(x)=='number' and x==x and math.abs(x)<1e12 end
 function C.teleportReplacement(old,ticket,userId,universeId,jobId)
     return type(old)=='table' and type(old.instanceJob)=='string' and type(jobId)=='string' and jobId~=''
@@ -25,6 +30,26 @@ function C.deficit(have,need)
     return math.max(0,need-have)
 end
 function C.isRukia(id) return id=='rukia_2' or id=='rukia_2_evo' end
+function C.slotPolicy(cfg,u)
+    local index=C.finite(u.slot) and math.clamp(math.floor(u.slot),1,6) or 1
+    local function item(key,fallback)
+        local at=0
+        for value in tostring(cfg[key] or ''):gmatch('[^,]+') do
+            at+=1;if at==index then local n=tonumber(value);return C.finite(n) and math.floor(n) or fallback end
+        end
+        return fallback
+    end
+    local cap=item('placeCaps',0);local upgrade=item('upgradeCaps',0)
+    if u.runtimeDisabled then cap=-1;upgrade=-1 end
+    local native=C.finite(u.spawnCap) and u.spawnCap or 0
+    return {placeCap=cap<0 and 0 or math.min(24,native,cap==0 and native or cap),
+        upgradeCap=upgrade<0 and -1 or math.min(40,upgrade),placeWave=math.clamp(item('placeWaves',0),0,10000),
+        upgradeWave=math.clamp(item('upgradeWaves',0),0,10000)}
+end
+function C.slotRank(cfg,slot)
+    local n=0;for value in tostring(cfg.slotOrder or ''):gmatch('%d+') do n+=1;if tonumber(value)==slot then return n end end
+    return (tonumber(slot) or 6)+6
+end
 function C.chooseRukia(units,uuid)
     for _,u in ipairs(units or {}) do if C.isRukia(u.id) and u.uuid==uuid then return u end end
     if type(uuid)=='string' and uuid~='' then return nil end
@@ -78,7 +103,8 @@ function C.sanitize(raw)
         if type(raw[k])==type(v) then cfg[k]=raw[k] end
     end
     for k,limit in pairs({reserve=1000000,maxRuns=100,maxSeconds=7200,traitCap=1000,statCap=1000,
-        autoDistance=100,autoGround=100,autoHill=100,dungeonShopCap=100000}) do
+        autoDistance=100,autoGround=100,autoHill=100,dungeonShopCap=100000,abilityGap=60,
+        skipStopWave=10000,sellAllWave=10000,sellFarmWave=10000,finishDelay=60}) do
         if not C.finite(cfg[k]) then cfg[k]=C.defaults[k] end
         cfg[k]=math.clamp(math.floor(cfg[k]),0,limit)
     end
@@ -88,15 +114,25 @@ function C.sanitize(raw)
     if not table.find({'Acquire','Trait','Stats','Evolution','Build'},cfg.goal) then cfg.goal='Acquire' end
     if not grades[cfg.targetGrade] then cfg.targetGrade='SSS' end
     if not table.find({'Unique','Divine','Celestial','Reaper','Godspeed','Sniper'},cfg.targetTrait) then cfg.targetTrait='Unique' end
-    for _,key in ipairs({'inventoryPath','resourcePath','cashPath','recordCosts'}) do cfg[key]=cfg[key]:sub(1,200) end
+    for _,key in ipairs({'inventoryPath','resourcePath','cashPath','recordCosts','dungeonShrineItems','dungeonBuyOrder',
+        'placeCaps','upgradeCaps','placeWaves','upgradeWaves','slotOrder','macroName'}) do cfg[key]=cfg[key]:sub(1,200) end
+    if #cfg.macroName>40 or not cfg.macroName:match('^[%w_%-]+$') then cfg.macroName='run' end
+    if not table.find({'place','upgrade','priority','ability','sell'},cfg.manualMacroKind) then cfg.manualMacroKind='place' end
+    if #cfg.profileName>40 or not cfg.profileName:match('^[%w_%-]+$') then cfg.profileName='default' end
+    if not table.find({'Normal','Low'},cfg.qualityProfile) then cfg.qualityProfile='Normal' end
+    if not table.find({'Dark','Midnight','OLED'},cfg.uiTheme) then cfg.uiTheme='Dark' end
+    if not C.finite(cfg.uiScale) then cfg.uiScale=1 end;cfg.uiScale=math.clamp(cfg.uiScale,.75,1.25)
+    if not C.finite(cfg.cameraZoom) then cfg.cameraZoom=0 end;cfg.cameraZoom=math.clamp(cfg.cameraZoom,0,200)
+    if not table.find({'collection','items','SummonGUI','TraitReroll','StatReroll'},cfg.nativeScreen) then cfg.nativeScreen='collection' end
     if not table.find({'Dungeon','Story','Infinite','Challenge','Portal','Raid','Event','Legend'},cfg.mode) then cfg.mode='Dungeon' end
-    if not table.find({'RoundRobin','Cheapest'},cfg.autoMethod) then cfg.autoMethod='RoundRobin' end
-    if not table.find({'LowestLevel','Cheapest'},cfg.autoUpgradeMethod) then cfg.autoUpgradeMethod='LowestLevel' end
-    if not table.find({'GameDefault','first'},cfg.autoTarget) then cfg.autoTarget='GameDefault' end
+    if not table.find({'RoundRobin','Cheapest','Custom'},cfg.autoMethod) then cfg.autoMethod='RoundRobin' end
+    if not table.find({'LowestLevel','Cheapest','SlotOrder','Custom','Value'},cfg.autoUpgradeMethod) then cfg.autoUpgradeMethod='LowestLevel' end
+    if not table.find({'GameDefault','first','last','strongest','weakest','closest','farthest'},cfg.autoTarget) then cfg.autoTarget='GameDefault' end
+    if not table.find({'GameDefault','first','last','strongest','weakest','closest','farthest'},cfg.autoBossTarget) then cfg.autoBossTarget='GameDefault' end
     if not table.find({'Safe','Rewards'},cfg.dungeonPreset) then cfg.dungeonPreset='Safe' end
     -- Spending/arming/protocol confirmations are session-specific and never restored.
     cfg.routeConfirmed=false;cfg.protocolConfirmed=false;cfg.replayFreeConfirmed=false
-    cfg.autoFollow=false;cfg.dungeonConsent=false;cfg.dungeonOpenChests=false
+    cfg.autoFollow=false;cfg.dungeonConsent=false;cfg.dungeonOpenChests=false;cfg.dungeonShrines=false;cfg.antiAfk=false
     return cfg
 end
 function C.outcome(texts)

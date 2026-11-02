@@ -218,6 +218,12 @@ return function(C, env, cfg, log)
             damageGrade=stringValue(st,{'damage_grade','damageGrade'}),
             spaGrade=stringValue(st,{'spa_grade','spaGrade'}),
             rangeGrade=stringValue(st,{'range_grade','rangeGrade'})}
+        u.activeAttack=stringValue(st,{'active_attack'})
+        u.lastCast=numericValue(st,'last_active_cast');u.cooldown=numericValue(st,'active_attack_cooldown')
+        local clockNow=type(tick)=='function' and tick() or nil
+        if C.finite(clockNow) and C.finite(u.lastCast) and C.finite(u.cooldown) and u.cooldown>0 then
+            u.castReady=clockNow>=u.lastCast+u.cooldown
+        end
         for k,keys in pairs(fields) do u[k]=number(st,keys) end
         if not u.uuid or not u.id then return nil end
         return u
@@ -572,6 +578,7 @@ return function(C, env, cfg, log)
         return r and (r:IsA('RemoteFunction') or r:IsA('RemoteEvent')) and r or nil
     end
     function A:watchResults()
+        self:watchWaveOffers()
         if not self.alive then return false end
         if self.resultConnection then return true end
         local event=child(child(child(RS,'endpoints'),'server_to_client'),'game_finished')
@@ -600,9 +607,22 @@ return function(C, env, cfg, log)
         self.resultConnection=connection;self.resultWatchState='on';return true
     end
     function A:stopResultWatch()
+        if self.skipConnection then pcall(function() self.skipConnection:Disconnect() end);self.skipConnection=nil end
         self.resultWatchToken=nil
         if self.resultConnection then pcall(function() self.resultConnection:Disconnect() end) end
         self.resultConnection=nil;self.resultWatchState='off'
+    end
+    function A:watchWaveOffers()
+        if self.skipConnection or not self.alive then return end
+        local event=child(child(child(RS,'endpoints'),'server_to_client'),'start_vote_wave_skip')
+        if not event or not event:IsA('RemoteEvent') then return end
+        local ok,conn=pcall(function() return event.OnClientEvent:Connect(function()
+            if not self.alive or not self.stage then return end
+            self.skipSerial=(self.skipSerial or 0)+1
+            self.skipOffer={token=tostring(self.run)..':'..self.skipSerial,wave=number(WS,{'_wave_num'}),
+                at=os.clock(),roundToken=self.roundToken}
+        end) end)
+        if ok then self.skipConnection=conn end
     end
     function A:busy()
         -- Some executors retain globals across teleports. An old server's
@@ -646,7 +666,8 @@ return function(C, env, cfg, log)
         if kind=='map' then remote=child(child(WS,'_MAP_CONFIG'),'GetLevelData')
         elseif kind=='dungeon' then remote=self:remote(geometry.endpoint)
         else remote=self:remote(({place='spawn_unit',upgrade='upgrade_unit_ingame',replay='set_game_finished_vote',
-            start='vote_start',lobby='teleport_back_to_lobby',priority='change_priority',next='set_game_finished_vote'})[kind]) end
+            start='vote_start',lobby='teleport_back_to_lobby',priority='change_priority',next='set_game_finished_vote',ability='use_active_attack',
+            skip='vote_wave_skip',sell='sell_unit_ingame'})[kind]) end
         if not remote or not (remote:IsA('RemoteFunction') or remote:IsA('RemoteEvent')) then
             return false,'Required observed endpoint unavailable'
         end
@@ -757,6 +778,8 @@ return function(C, env, cfg, log)
             local def=type(self.definitions)=='table' and rawget(self.definitions,u.id) or nil
             if type(def)~='table' then return end
             local farm=rawget(def,'farm_amount');local damage=rawget(def,'damage');local spa=rawget(def,'attack_cooldown')
+            local unsellable=rawget(def,'unsellable')
+            u.sellable=u.id~='bulma' and unsellable==false
             local cap=rawget(def,'spawn_cap')
             if C.finite(cap) and cap>=1 and cap<=100 and cap%1==0 then u.spawnCap=cap end
             if C.hasTrait(u,'Unique') then u.spawnCap=1 end
@@ -802,6 +825,9 @@ return function(C, env, cfg, log)
             local copy=table.clone(u);costs(copy);roster[#roster+1]=copy
         end
         local units={};self.models={};local unitsComplete=true
+        local enemyUnits={};local enemyComplete=true
+        local csOK,collection=pcall(function() return game:GetService('CollectionService') end)
+        if not csOK or not collection then enemyComplete=false end
         local scan={total=0,examined=0,own=0,missingIdentity=0,missingPosition=0}
         if folder then
             local children=folder:GetChildren();unitsComplete=#children<=120
@@ -816,6 +842,18 @@ return function(C, env, cfg, log)
                         costs(u);u.key=m;u.pos=point(m);self.models[m]=m;units[#units+1]=u
                         if C.distance(u.pos,u.pos)~=0 then scan.missingPosition+=1 end
                     else scan.missingIdentity+=1 end
+                elseif m:IsA('Model') and collection then
+                    local tagOK,tagged=pcall(function() return collection:HasTag(m,'pve_units') end)
+                    local stats=child(m,'_stats');local owner=child(stats,'player')
+                    if not tagOK then enemyComplete=false
+                    elseif tagged and owner and owner:IsA('ObjectValue') and owner.Value==nil then
+                        local hum=m:FindFirstChildOfClass('Humanoid')
+                        local id=stringValue(stats,{'id'})
+                        local bossId=type(self.levelData)=='table' and rawget(self.levelData,'boss')
+                        local enemy={id=id,pos=point(m),health=hum and hum.Health}
+                        if type(bossId)=='string' and id~=nil then enemy.boss=id==bossId end
+                        enemyUnits[#enemyUnits+1]=enemy
+                    end
                 end
             end
         end
@@ -939,12 +977,15 @@ return function(C, env, cfg, log)
             nextStoryId=nextStoryId,
             dungeon=dungeon,dungeonAt=dungeon.valid and now or nil,
             voteStartFinished=scalar(child(child(WS,'_DATA'),'VoteStart'),{'VotingFinished'}),
+            skipFinished=scalar(child(child(WS,'_DATA'),'VoteSkip'),{'VotingFinished'}),
+            skipOffer=self.skipOffer and self.skipOffer.roundToken==self.roundToken and now-self.skipOffer.at<=30 and self.skipOffer or nil,
             wallet=wallet,walletSources=walletSources,rawResource=rawResource,
             owned=owned,ownedAt=#owned>0 and now or self.ownedAt,roster=roster,rosterAt=self.rosterAt,
             rosterComplete=self.rosterComplete,equippedDeclared=self.equippedDeclared,
             costScale=costScale,definitionsAvailable=self.definitions~=nil,mapStatus=self.mapStatus,
             resources=self.resources,resourcesAt=self.resourcesAt,resultVisible=show or finished==true,outcome=outcome,outcomeSource=outcomeSource,
-            resultTexts=texts,enemies=count,pathSamples=#self.path,transportBlocked=self:busy(),
+            resultTexts=texts,enemies=count,enemyUnits=enemyUnits,enemiesComplete=enemyComplete and unitsComplete,
+            pathSamples=#self.path,transportBlocked=self:busy(),
             inventorySource=self.inventorySource}
         if s.inMatch and not s.stageVerified and not self.mapRequested and not self:busy()
             and now>=self.nextMapTry and (self.mapAttempts or 0)<3 and now<=(self.mapDeadline or now) then
@@ -979,10 +1020,32 @@ return function(C, env, cfg, log)
             if cfg.autoNextStory~=true then return false,'Next Story permission is OFF' end
             return self:issue('next',{'next_story'})
         elseif action.kind=='priority' then
-            if cfg.autoTarget~='first' or action.target~='first' or not self.models[action.key] then
+            if not table.find({'first','last','strongest','weakest','closest','farthest'},action.target)
+                or (action.target~=cfg.autoTarget and action.target~=cfg.autoBossTarget and not (action.macro and cfg.macroSession)) or not self.models[action.key] then
                 return false,'Unsupported target setting or unknown own model'
             end
-            return self:issue('priority',{self.models[action.key],'first'},{uuid=action.uuid})
+            return self:issue('priority',{self.models[action.key],action.target},{uuid=action.uuid})
+        elseif action.kind=='ability' then
+            local model=self.models[action.key];local u=model and record(model,'battle')
+            if (cfg.autoAbilities~=true and not (action.macro and cfg.macroSession)) or not u or u.uuid~=action.uuid or u.id~=action.id or not u.castReady
+                or type(u.activeAttack)~='string' or u.activeAttack=='' or u.activeAttack=='nil' or u.activeAttack:find(':',1,true) then
+                return false,'Exact equipped ready normal ability unavailable'
+            end
+            return self:issue('ability',{model},{uuid=u.uuid})
+        elseif action.kind=='skip' then
+            local offer=self.skipOffer
+            if (cfg.autoSkip~=true and not (action.macro and cfg.macroSession)) or not offer or action.offerToken~=offer.token or action.wave~=offer.wave
+                or number(WS,{'_wave_num'})~=action.wave or offer.roundToken~=self.roundToken
+                or scalar(child(child(WS,'_DATA'),'VoteSkip'),{'VotingFinished'})~=false then return false,'Current skip offer/readback unavailable' end
+            return self:issue('skip',{})
+        elseif action.kind=='sell' then
+            local model=self.models[action.key];local u=model and record(model,'battle')
+            local def=u and self.definitions and rawget(self.definitions,u.id)
+            if not u or u.uuid~=action.uuid or u.id~=action.id or u.id=='bulma' or type(def)~='table'
+                or rawget(def,'unsellable')~=false or ((cfg.sellAllWave or 0)<=0 and (cfg.sellFarmWave or 0)<=0 and not (action.macro and cfg.macroSession)) then
+                return false,'Sale policy or exact sellability unavailable'
+            end
+            return self:issue('sell',{model},{uuid=u.uuid})
         elseif action.kind=='dungeon' then
             if cfg.dungeonConsent~=true then return false,'Dungeon session not explicitly armed' end
             local name,args=action.name,action.args
@@ -994,6 +1057,7 @@ return function(C, env, cfg, log)
                 allowed=cfg.dungeonOpenChests==true and (#args==0 or (#args==1 and args[1]==true))
             elseif name=='dungeon_buy_shop' then
                 allowed=cfg.dungeonShopCap>0 and #args==1 and C.finite(args[1]) and args[1]>=1 and args[1]<=32 and args[1]%1==0
+            elseif name=='dungeon_shrine_accept' then allowed=cfg.dungeonShrines==true and #args==0
             end
             if not allowed then return false,'Unsupported Dungeon action, payload or spending permission' end
             return self:issue('dungeon',args,{endpoint=name})

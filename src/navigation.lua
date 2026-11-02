@@ -19,6 +19,7 @@ return function(C,WS,RS,log)
         if #lanes==0 then return nil,'Native LANES empty' end
         table.sort(lanes,function(a,b) return tostring(a.Name)<tostring(b.Name) end)
         local longest,length=nil,0
+        local observedPaths={}
         for _,lane in ipairs(lanes) do
             local nodes;nodes,why=children(lane,96,'Native lane nodes')
             if not nodes then return nil,why end
@@ -43,19 +44,25 @@ return function(C,WS,RS,log)
             table.sort(numbered,function(a,b) return a.index<b.index end)
             local points={first};for _,v in ipairs(numbered) do points[#points+1]=v.pos end;points[#points+1]=last
             local total=0;for i=2,#points do total+=C.distance(points[i-1],points[i]) end
+            if total>0 then observedPaths[#observedPaths+1]={points=points,length=total} end
             if total>length then longest=points;length=total end
         end
         if not longest or length<=0 then return nil,'Native lane has no positive observed length' end
-        local remaining=length*percent/100
-        for i=2,#longest do
-            local a,b=longest[i-1],longest[i];local segment=C.distance(a,b)
-            if segment>0 and remaining<=segment then
-                local t=remaining/segment
-                return {a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t,a[3]+(b[3]-a[3])*t}
+        local function at(points,total)
+            local remaining=total*percent/100
+            for i=2,#points do
+                local a,b=points[i-1],points[i];local segment=C.distance(a,b)
+                if segment>0 and remaining<=segment then
+                    local t=remaining/segment
+                    return {a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t,a[3]+(b[3]-a[3])*t}
+                end
+                remaining-=segment
             end
-            remaining-=segment
+            return table.clone(points[#points])
         end
-        return table.clone(longest[#longest])
+        table.sort(observedPaths,function(a,b) return a.length>b.length end)
+        local anchors={};for _,p in ipairs(observedPaths) do anchors[#anchors+1]=at(p.points,p.length) end
+        return at(longest,length),nil,anchors
     end
     local function within(part,root)
         if not root then return false end
@@ -129,7 +136,7 @@ return function(C,WS,RS,log)
             local percent=cfg.autoDistance==nil and 50 or cfg.autoDistance
             local groundPercent=cfg.autoGround==nil and 60 or cfg.autoGround;local hillPercent=cfg.autoHill==nil and 80 or cfg.autoHill
             for _,v in ipairs({percent,groundPercent,hillPercent}) do if not C.finite(v) or v<0 or v>100 then return nil,'Native placement percentage invalid' end end
-            local anchor,why=lanePoint(percent);if not anchor then return nil,why end
+            local anchor,why,anchors=lanePoint(percent);if not anchor then return nil,why end
             local terrain=child(WS,'_terrain');local ground,hill=child(terrain,'ground'),child(terrain,'hill')
             if not terrain or (not ground and not hill) then return nil,'Loaded _terrain ground/hill unavailable' end
             local road,units=child(WS,'_road'),child(WS,'_UNITS')
@@ -155,11 +162,13 @@ return function(C,WS,RS,log)
             end
             for _,u in ipairs(s.roster) do
                 if type(u.uuid)~='string' or u.uuid=='' or seen[u.uuid] or type(u.id)~='string' or u.id=='' then return nil,'Equipped UUID/ID missing or duplicated' end
+                if not C.finite(u.slot) or u.slot%1~=0 or u.slot<1 or u.slot>6 then return nil,'Supported hotbar slot1–6 required' end
                 seen[u.uuid]=true
                 if not C.finite(u.spawnCap) or u.spawnCap<1 or u.spawnCap%1~=0 then return nil,'Known positive integer spawn cap required: '..u.id end
-                local limit=C.hasTrait(u,'Unique') and 1 or math.min(24,u.spawnCap);local count=0
+                local nativeLimit=C.hasTrait(u,'Unique') and 1 or math.min(24,u.spawnCap)
+                local limit=math.min(nativeLimit,C.slotPolicy(cfg,u).placeCap);local count=0
                 for _,v in ipairs(s.units) do if v.uuid==u.uuid and v.id==u.id then count+=1 end end
-                if count>limit then return nil,'Observed copies exceed loaded cap: '..u.id end
+                if count>nativeLimit then return nil,'Observed copies exceed loaded cap: '..u.id end
                 local def=type(definitions)=='table' and definitions[u.id]
                 if type(def)~='table' then return nil,'Loaded unit placement definition unavailable: '..u.id end
                 for _,key in ipairs({'hill_unit','hybrid_placement'}) do
@@ -202,10 +211,12 @@ return function(C,WS,RS,log)
                     for attempt=1,96 do
                         if self.closed then return nil,'Native planner closed during geometry search' end
                         -- An original bounded radial sequence, anchored only to the observed path.
-                        local radius=attempt==1 and 0 or searchRadius*math.sqrt((attempt-1)/95)
-                        local angle=(attempt-2)*2.399963229728653
-                        local x,z=anchor[1]+math.cos(angle)*radius,anchor[3]+math.sin(angle)*radius
-                        local hit=WS:Raycast(Vector3.new(x,anchor[2]+80,z),Vector3.new(0,-400,0),rp);rays+=1
+                        local laneAnchor=anchors[(attempt-1)%#anchors+1]
+                        local step=math.floor((attempt-1)/#anchors)
+                        local radius=step==0 and 0 or searchRadius*math.sqrt(step/math.max(1,math.floor(95/#anchors)))
+                        local angle=(step-1)*2.399963229728653
+                        local x,z=laneAnchor[1]+math.cos(angle)*radius,laneAnchor[3]+math.sin(angle)*radius
+                        local hit=WS:Raycast(Vector3.new(x,laneAnchor[2]+80,z),Vector3.new(0,-400,0),rp);rays+=1
                         local pos,class=surface(hit,terrain,ground,hill,slot.def,x,z)
                         if not pos then blocked(class,1)
                         elseif radius>(class=='hill' and hRadius or gRadius) then blocked('Observed surface outside configured planning range',0)
