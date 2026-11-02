@@ -5,7 +5,7 @@ local __modules = {}
 __modules.core = (function()
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.7'
+C.version = '6.1.0'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -115,16 +115,15 @@ function C.placementVerified(p,units)
     end
     return found,false
 end
-function C.readiness(s,p,cfg)
+function C.profileReadiness(s,p,cfg)
     local blockers={}
     local function need(ok,msg) if not ok then blockers[#blockers+1]=msg end end
     need(s.inMatch,'Enter a match manually')
     need(s.unitsComplete==true,'Tower observation is incomplete; cannot validate placements safely')
     need(s.stageVerified==true,'Stage identity not observed')
-    need(cfg.routeConfirmed==true and C.contextMatches(cfg.routeContext,s),'Confirm this stage actually advances the Rukia objective')
-    need(cfg.protocolConfirmed==true and C.contextMatches(cfg.protocolContext,s),'Placement protocol needs confirmation for this stage')
     need(s.transportBlocked~=true,'An earlier remote request is still outstanding')
-    need(C.finite(s.rosterAt) and s.now-s.rosterAt<=15,'Fresh equipped UUIDs unavailable')
+    need(s.mutationFence~=true,'Prior mutation lacks exact feedback in this round; enter a fresh match')
+    need(C.finite(s.now) and C.finite(s.rosterAt) and s.now>=s.rosterAt and s.now-s.rosterAt<=15,'Fresh equipped UUIDs unavailable')
     need(C.finite(s.cash),'Live match Yen unknown')
     if type(p)~='table' or type(p.entries)~='table' then
         blockers[#blockers+1]='Record current own placements first';return blockers
@@ -144,6 +143,16 @@ function C.readiness(s,p,cfg)
         need(C.finite(e.cost) and e.cost>0,'Profile slot '..i..' deployment cost unknown')
         need(not u or not C.finite(u.cost) or u.cost==e.cost,'Profile slot '..i..' deployment price changed')
         need(C.distance(e.pos,e.pos)==0,'Profile slot '..i..' position invalid')
+    end
+    return blockers
+end
+function C.readiness(s,p,cfg)
+    local blockers=C.profileReadiness(s,p,cfg)
+    if cfg.routeConfirmed~=true or not C.contextMatches(cfg.routeContext,s) then
+        blockers[#blockers+1]='Confirm this stage actually advances the Rukia objective'
+    end
+    if cfg.protocolConfirmed~=true or not C.contextMatches(cfg.protocolContext,s) then
+        blockers[#blockers+1]='Placement protocol needs confirmation for this stage'
     end
     return blockers
 end
@@ -223,10 +232,12 @@ function C.engine(cfg,log)
     local e={cfg=cfg,log=log or C.logger(),armed=false,state='IDLE',reason='Full Auto OFF',
         wins=0,losses=0,placements=0,upgrades=0,runs=0,pending=nil,index=1,resultRun=nil}
     function e:stop(reason,state)
+        if self.pending then self.uncertainRun=self.run end
         self.armed=false;self.state=state or 'BLOCKED';self.reason=reason;self.pending=nil
         self.log:add(self.state,reason)
     end
     function e:arm(s,p)
+        if self.uncertainRun==s.run then self:stop('Prior action unconfirmed; enter a fresh match');return false end
         local b=C.readiness(s,p,self.cfg)
         if #b>0 then self:stop(table.concat(b,'; '));return false end
         self.armed=true;self.state='RUNNING';self.reason='Supervised recorded combat'
@@ -391,7 +402,8 @@ return function(C)
         return u
     end
     function I.read(service,userId)
-        local out={valid=false,owned={},roster={},resources={},truncated=false,rejected=0,reason='Client schema unavailable'}
+        local out={valid=false,owned={},roster={},resources={},truncated=false,rejected=0,
+            equippedComplete=false,equippedDeclared=0,reason='Client schema unavailable'}
         local session=tableAt(service,'session')
         local profile=tableAt(session,'profile_data')
         local collection=tableAt(tableAt(session,'collection'),'collection_profile_data')
@@ -416,17 +428,28 @@ return function(C)
         end
         local equipped=tableAt(collection,'equipped_units')
         if equipped then
+            out.equippedComplete=true
+            local key=nil
+            for i=1,32 do
+                key=next(equipped,key);if key==nil then break end
+                local slot=type(key)=='number' and key or type(key)=='string' and tonumber(key)
+                if not C.finite(slot) or slot%1~=0 or slot<1 or slot>8
+                    or (type(key)=='string' and key~=tostring(slot)) then out.equippedComplete=false end
+                if i==32 and next(equipped,key)~=nil then out.equippedComplete=false end
+            end
             for slot=1,8 do
                 local numeric=rawget(equipped,slot)
                 local named=rawget(equipped,tostring(slot))
                 local ambiguous=numeric~=nil and named~=nil and numeric~=named
                 local uuid=numeric;if uuid==nil then uuid=named end
-                if ambiguous then out.rejected+=1;uuid=nil end
+                if uuid~=nil then out.equippedDeclared+=1 end
+                if ambiguous then out.rejected+=1;out.equippedComplete=false;uuid=nil end
                 local u=add(uuid)
                 if u then
                     -- A UUID occupying multiple slots is ambiguous, so never
                     -- manufacture a second equipped record for it.
-                    if u.slot then out.rejected+=1 else u.slot=slot;out.roster[#out.roster+1]=u end
+                    if u.slot then out.rejected+=1;out.equippedComplete=false else u.slot=slot;out.roster[#out.roster+1]=u end
+                elseif uuid~=nil then out.equippedComplete=false
                 end
             end
         end
@@ -498,6 +521,7 @@ return function(C,cfg,log)
     function T:quote(kind,s,p)
         if kind~='place' and kind~='upgrade' then return nil,'Unsupported test action' end
         if self.pending or s.transportBlocked then return nil,'A request/test is still pending' end
+        if s.mutationFence then return nil,'Prior mutation lacks exact feedback; enter a fresh match' end
         if self.state=='UNCONFIRMED' and self.attemptRun==s.run then
             return nil,'Previous test unconfirmed; inspect the report and enter a fresh match'
         end
@@ -633,6 +657,232 @@ end
 
 end)()
 
+__modules.team = (function()
+-- Pure recorded-team orchestration. No Rukia-route claims or native calls.
+return function(C,cfg,log)
+    local T={armed=false,state='IDLE',reason='Team Auto OFF',pending=nil,
+        placements=0,upgrades=0,wins=0,losses=0,runs=0,reportDue=false}
+    local function role(e)
+        return table.find({'combat','farm','buff'},e.role) and e.role or 'unknown'
+    end
+    local function matches(s,p)
+        local out,used={},{}
+        for i,e in ipairs(p.entries) do
+            local found
+            for _,u in ipairs(s.units or {}) do
+                if u.key and u.uuid==e.uuid and u.id==e.id and C.distance(u.pos,e.pos)<=3 then
+                    if found and found.key~=u.key then return nil,'Multiple towers match recorded target '..i end
+                    found=u
+                end
+            end
+            if found then
+                if used[found.key] then return nil,'One tower matches multiple recorded targets' end
+                used[found.key]=true;out[i]=found
+            end
+        end
+        return out
+    end
+    function T:coverage(s,p)
+        local count,total,missing=0,0,{}
+        for _,u in ipairs(s.roster or {}) do
+            total+=1;local found=false
+            for i,e in ipairs(type(p)=='table' and type(p.entries)=='table' and p.entries or {}) do
+                if i>24 then break end
+                if type(e)=='table' and e.uuid==u.uuid and e.id==u.id then found=true;break end
+            end
+            if found then count+=1 else missing[#missing+1]='slot '..tostring(u.slot)..' '..u.id end
+        end
+        return count,total,missing
+    end
+    function T:readiness(s,p)
+        local b=C.profileReadiness(s,p,cfg)
+        if not s.modeVerified or s.mode~='Story' then b[#b+1]='Team Auto currently supports observed Story only' end
+        if type(p)~='table' or p.kind~='team-v1' then b[#b+1]='Record a team profile first' end
+        local covered,total,missing=self:coverage(s,p)
+        if s.rosterComplete~=true then b[#b+1]='Declared equipped-slot data is incomplete or ambiguous' end
+        if total==0 or covered~=total then b[#b+1]='Record every equipped slot: '..table.concat(missing,', ') end
+        for _,u in ipairs(s.roster or {}) do
+            if not C.finite(u.cost) or u.cost<=0 then b[#b+1]='Current deployment price unknown: '..u.id end
+        end
+        for _,u in ipairs(s.units or {}) do
+            if type(p)=='table' and type(p.entries)=='table' then
+                for _,e in ipairs(p.entries) do
+                    if type(e)=='table' and u.uuid==e.uuid and u.id==e.id and C.distance(u.pos,u.pos)~=0 then
+                        b[#b+1]='Live recorded tower position unavailable';break
+                    end
+                end
+            end
+        end
+        if not C.finite(cfg.reserve) or cfg.reserve<0 or not C.finite(cfg.maxSeconds) or cfg.maxSeconds<30
+            or not C.finite(cfg.maxRuns) or cfg.maxRuns<1 then b[#b+1]='Invalid session budget/limits' end
+        if type(p)=='table' and type(p.entries)=='table' then
+            for i,e in ipairs(p.entries) do
+                if i>24 then break end
+                if type(e)=='table' then
+                    for j=1,i-1 do
+                        local other=p.entries[j]
+                        if type(other)=='table' and other.uuid==e.uuid and other.id==e.id and C.distance(other.pos,e.pos)<=3 then
+                            b[#b+1]='Recorded copies too close for unique readback';break
+                        end
+                    end
+                end
+            end
+            if #b==0 then local _,why=matches(s,p);if why then b[#b+1]=why end end
+        end
+        return b
+    end
+    function T:stop(reason,state)
+        if self.pending then self.uncertainRun=self.run end
+        local active=self.armed or self.pending~=nil
+        self.armed=false;self.pending=nil;self.state=state or 'BLOCKED';self.reason=reason
+        if active then self.reportDue=true end
+        log:add('TEAM '..self.state,reason)
+    end
+    function T:reject(reason) self:stop('Request rejected/unconfirmed: '..tostring(reason)) end
+    function T:arm(s,p)
+        if self.uncertainRun==s.run then self:stop('Prior action unconfirmed; enter a fresh match');return false end
+        local b=self:readiness(s,p)
+        if #b>0 then self:stop(table.concat(b,'; '));return false end
+        self.armed=true;self.state='RUNNING';self.reason='Supervised recorded Story team'
+        self.run=s.run;self.startedAt=s.now;self.progressAt=s.now;self.lastWave=s.wave
+        self.lastAction=-math.huge;self.pending=nil;self.countedRun=nil;self.runs=0;self.dataWaitAt=nil;self.reportDue=false
+        log:add('TEAM ARM','Recorded Story team; no premium actions');return true
+    end
+    function T:tick(s,p)
+        if not self.armed then return nil end
+        if s.now-self.startedAt>=cfg.maxSeconds then self:stop('Team session time limit');return nil end
+        if self.pending and self.pending.kind=='replay' then
+            if s.now-self.pending.at>15 then self:stop('Replay reset/identity timeout');return nil end
+            if s.run==self.run then return nil end
+            if self.pending.roundToken and self.pending.roundToken==s.roundToken then return nil end
+            if not s.inMatch or not s.stageVerified then return nil end
+            if not C.contextMatches(p,s) or not s.modeVerified or s.mode~='Story' then self:stop('Replay changed stage/mode');return nil end
+            if s.resultVisible then return nil end
+            -- A fresh round must clear the recorded towers before new spending.
+            for _,u in ipairs(s.units or {}) do
+                for _,e in ipairs(p.entries) do if u.uuid==e.uuid and u.id==e.id then return nil end end
+            end
+            self.pending=nil;self.run=s.run;self.countedRun=nil;self.lastWave=s.wave;self.progressAt=s.now
+            self.lastAction=-math.huge;self.state='RUNNING';self.dataWaitAt=nil
+        elseif s.run~=self.run then self:stop('Match changed; recheck team before arming');return nil end
+        if not s.inMatch or not s.stageVerified or not s.modeVerified or s.mode~='Story' or s.unitsComplete~=true then
+            self:stop('Match/observation became unsupported');return nil
+        end
+        if s.wave~=self.lastWave then self.lastWave=s.wave;self.progressAt=s.now end
+        if s.resultVisible then
+            if self.countedRun~=s.run then
+                self.countedRun=s.run;self.runs+=1
+                if s.outcome=='Victory' then self.wins+=1 elseif s.outcome=='Defeat' then self.losses+=1 end
+                log:add('TEAM RESULT',tostring(s.outcome)..' | source='..tostring(s.outcomeSource or 'UI'))
+            end
+            if self.pending then self:stop('Match ended during an unresolved action; replay stopped','RESULT');return nil end
+            if s.outcome~='Victory' or not cfg.replay or not cfg.replayFreeConfirmed
+                or not C.contextMatches(cfg.replayContext,s) or self.runs>=cfg.maxRuns then
+                self:stop('Result: '..tostring(s.outcome)..'; replay stopped','RESULT');return nil
+            end
+            if s.transportBlocked then return nil end
+            self.pending={kind='replay',at=s.now,roundToken=s.roundToken};self.state='REPLAY_WAIT';self.reason='Waiting for a fresh matching round'
+            return {kind='replay'}
+        end
+        if self.pending then
+            local q=self.pending
+            if s.now-q.at>8 then self:stop(q.kind..' feedback timeout; no retry');return nil end
+            local found,ambiguous
+            if q.kind=='place' then found,ambiguous=C.placementVerified(q,s.units)
+            else
+                for _,u in ipairs(s.units) do
+                    if u.key==q.key and u.uuid==q.uuid and u.id==q.id and C.distance(u.pos,q.pos)<=3 and C.finite(u.level) and u.level>q.level then
+                        if u.level~=q.level+1 then self:stop('Unexpected upgrade jump');return nil end
+                        found=u;break
+                    end
+                end
+            end
+            if ambiguous then self:stop('Ambiguous placement readback');return nil end
+            if found then
+                if q.kind=='place' then self.placements+=1 else self.upgrades+=1 end
+                log:add('TEAM CONFIRMED',q.kind..' '..q.id)
+                self.pending=nil;self.lastAction=s.now;self.progressAt=s.now;self.state='RUNNING'
+            end
+            return nil
+        end
+        local b=self:readiness(s,p)
+        if #b>0 then self:stop(table.concat(b,'; '));return nil end
+        if s.now-self.progressAt>180 then self:stop('No wave/action progress for 180 seconds');return nil end
+        if not s.started or s.transportBlocked or s.now-self.lastAction<1.5 then return nil end
+        local matched,why=matches(s,p)
+        if not matched then self:stop(why);return nil end
+        local missing,combatExists,farmExists,hasCombat={},false,false,false
+        for i,e in ipairs(p.entries) do
+            if role(e)=='combat' then hasCombat=true end
+            if matched[i] then
+                if role(e)=='combat' then combatExists=true elseif role(e)=='farm' then farmExists=true end
+            else missing[#missing+1]={entry=e,index=i} end
+        end
+        if #missing>0 then
+            local options={}
+            for _,v in ipairs(missing) do
+                local e=v.entry
+                local allowed=not hasCombat or combatExists or role(e)=='combat' or (not farmExists and role(e)=='farm')
+                if allowed and (e.wave or 0)<=s.wave and s.cash-cfg.reserve>=e.cost then options[#options+1]=v end
+            end
+            table.sort(options,function(a,b)
+                local rank={combat=1,farm=2,buff=3,unknown=4}
+                if combatExists then rank={farm=1,combat=2,buff=3,unknown=4} end
+                local ra,rb=rank[role(a.entry)],rank[role(b.entry)]
+                if ra~=rb then return ra<rb end
+                if a.entry.cost~=b.entry.cost then return a.entry.cost<b.entry.cost end
+                return a.index<b.index
+            end)
+            local chosen=options[1]
+            if not chosen then
+                self.state='WAITING';self.reason=not combatExists and farmExists and hasCombat and 'Saving for the first combat unit' or 'Waiting for an affordable recorded placement'
+                return nil
+            end
+            local e=chosen.entry;local before={}
+            for _,u in ipairs(s.units) do if u.key then before[u.key]=true end end
+            self.pending={kind='place',uuid=e.uuid,id=e.id,pos=table.clone(e.pos),before=before,at=s.now}
+            self.state='PLACE_WAIT';self.reason='Placing '..e.id..' | quoted Yen='..e.cost
+            return {kind='place',uuid=e.uuid,id=e.id,pos=table.clone(e.pos)}
+        end
+        if not cfg.upgrade then self.state='HOLDING';self.reason='Recorded team placed; upgrades disabled';return nil end
+        local best,bestIndex,unknown=nil,nil,false
+        for i,u in pairs(matched) do
+            local maximum=C.finite(u.maxLevel) and C.finite(u.level) and u.level>=u.maxLevel
+            if not maximum then
+                if not C.finite(u.level) or u.level<0 or u.level%1~=0 or not C.finite(u.nextCost) or u.nextCost<=0 then unknown=true
+                elseif s.cash-cfg.reserve>=u.nextCost and (not best or u.level<best.level
+                    or (u.level==best.level and (u.nextCost<best.nextCost or (u.nextCost==best.nextCost and i<bestIndex)))) then
+                    best=u;bestIndex=i
+                end
+            end
+        end
+        if best then
+            self.dataWaitAt=nil
+            self.pending={kind='upgrade',uuid=best.uuid,id=best.id,key=best.key,pos=table.clone(best.pos),level=best.level,at=s.now}
+            self.state='UPGRADE_WAIT';self.reason='Upgrading '..best.id..' | quoted Yen='..best.nextCost
+            return {kind='upgrade',key=best.key,uuid=best.uuid,id=best.id}
+        end
+        if unknown then
+            self.dataWaitAt=self.dataWaitAt or s.now
+            self.reason='Waiting for known upgrade levels/prices'
+            if s.now-self.dataWaitAt>15 then self:stop('Upgrade level/price unavailable; not treated as maximum') end
+        else self.dataWaitAt=nil;self.reason='Recorded team placed; waiting for funds or the observed result' end
+        if self.armed then self.state='HOLDING' end
+        return nil
+    end
+    function T:text(s,p)
+        local count,total,missing=self:coverage(s or {},p)
+        return 'TEAM AUTO: '..self.state..' | '..self.reason..'\nRecorded slots '..count..' / '..total..
+            ' | targets='..tostring(type(p)=='table' and type(p.entries)=='table' and #p.entries or 0)..
+            (#missing>0 and '\nMissing: '..table.concat(missing,', ') or '')..
+            '\nTeam-confirmed placements='..self.placements..' upgrades='..self.upgrades..
+            ' | wins='..self.wins..' losses='..self.losses
+    end
+    return T
+end
+
+end)()
+
 __modules.roblox = (function()
 -- Native observations plus an explicit, experimental cached-client reader.
 local makeInventory=__modules.inventory
@@ -666,6 +916,58 @@ return function(C, env, cfg, log)
         local v=child(p,key)
         if not v or not (v:IsA('NumberValue') or v:IsA('IntValue')) then return nil end
         return C.finite(v.Value) and v.Value or nil
+    end
+    -- Shared only in memory. A controller reload must not manufacture a new
+    -- round merely by resetting its local run counter or Loader cache.
+    local function syncRound(self,frame)
+        if not frame then
+            local units,wave=child(WS,'_UNITS'),child(WS,'_wave_num')
+            local w=number(WS,{'_wave_num'}) or 0;local started=scalar(WS,{'_waves_started'})
+            local lobby=w==0 and started~=true and child(WS,'_LOBBIES')
+                and (child(WS,'_EVOLVE') or child(WS,'_traits'))
+            frame={waveNode=wave,w=w,started=started,finished=scalar(child(WS,'_DATA'),{'GameFinished'}),
+                context=lobby and 'Lobby' or units and wave and 'Match' or 'Unknown'}
+        end
+        local previous=env.K_AA_NATIVE_ROUND
+        local job=type(game.JobId)=='string' and game.JobId~='' and game.JobId or nil
+        local changed=type(previous)~='table'
+        if not changed then
+            changed=previous.placeId~=game.PlaceId or (previous.job and job and previous.job~=job)
+                or (previous.waveNode and frame.waveNode and previous.waveNode~=frame.waveNode)
+                or (frame.waveNode and C.finite(previous.w) and frame.w<previous.w)
+                or (frame.started==false and previous.started==true)
+                or (frame.finished==false and previous.finished==true)
+                or (frame.context~='Unknown' and previous.context~='Unknown' and frame.context~=previous.context)
+        end
+        local token=changed and {} or previous.token
+        local function retain(key)
+            local v=frame[key]
+            if v~=nil then return v end
+            if not changed then return previous[key] end
+        end
+        local context=frame.context
+        if context=='Unknown' and not changed then context=previous.context end
+        env.K_AA_NATIVE_ROUND={token=token,placeId=game.PlaceId,job=job or (not changed and previous.job or nil),
+            waveNode=retain('waveNode'),w=frame.waveNode and frame.w or (not changed and previous.w or nil),
+            started=retain('started'),finished=retain('finished'),context=context}
+        if changed then
+            local old=env.K_AA_MUTATION_FEEDBACK
+            if old and old.roundToken~=token then env.K_AA_MUTATION_FEEDBACK=nil end
+        end
+        self.roundToken=token;return token
+    end
+    function A:mutationFenced()
+        local fence=env.K_AA_MUTATION_FEEDBACK
+        return type(fence)=='table' and fence.roundToken==self.roundToken
+    end
+    function A:confirmMutation(token)
+        local fence=env.K_AA_MUTATION_FEEDBACK
+        if token and type(fence)=='table' and fence.token==token then
+            env.K_AA_MUTATION_FEEDBACK=nil
+            if self.lastMutation and self.lastMutation.feedbackToken==token then self.lastMutation.feedbackState='exact readback observed' end
+            return true
+        end
+        return false
     end
     local function cleanText(value,uuid)
         if type(value)~='string' then return '<'..type(value)..'>' end
@@ -790,7 +1092,7 @@ return function(C, env, cfg, log)
     end
     local fields={damage={'damage','dmg'},spa={'spa','attack_cooldown','attack_speed'},
         range={'range','attack_range'},cost={'placement_cost','spawn_cost','place_cost'},
-        nextCost={'next_upgrade_cost','upgrade_cost'},level={'upgrade','upgrade_level'},
+        nextCost={'next_upgrade_cost','upgrade_cost'},level={'upgrade','upgrade_level'},maxLevel={'max_upgrade'},
         takedowns={'takedowns','kills'},worthiness={'worthiness'},slot={'equipped_slot','equippedSlot'}}
     local function record(node,scope)
         local st=child(node,'_stats') or child(node,'stats') or node
@@ -830,13 +1132,15 @@ return function(C, env, cfg, log)
         local cached=self.clientService and inventoryParser.read(self.clientService,LP.UserId)
         if cached and cached.valid and cfg.inventoryPath=='' then units=cached.owned;roster=cached.roster end
         self.owned=units;self.roster=roster
+        self.rosterComplete=cached and cached.valid and cfg.inventoryPath=='' and cached.equippedComplete==true or false
+        self.equippedDeclared=cached and cached.valid and cached.equippedDeclared or nil
         self.ownedAt=#roots>0 and now or nil;self.rosterAt=#roster>0 and now or nil
         self.inventorySource=#roots>0 and 'partial player-replicated collection' or 'not exposed through configured paths'
         if cached and cached.valid and cfg.inventoryPath=='' then
             self.ownedAt=now
             self.inventorySource='partial client cache: '..tostring(self.clientSource)..
                 ' | recognized='..#units..' equipped='..#roster..' rejected='..cached.rejected..
-                ' truncated='..tostring(cached.truncated)
+                ' truncated='..tostring(cached.truncated)..' equipped-complete='..tostring(self.rosterComplete)
         elseif cached and not cached.valid and #roots==0 then
             self.inventorySource='client cache schema unavailable; observations cleared'
         end
@@ -1146,6 +1450,39 @@ return function(C, env, cfg, log)
         r=child(r,name)
         return r and (r:IsA('RemoteFunction') or r:IsA('RemoteEvent')) and r or nil
     end
+    function A:watchResults()
+        if not self.alive then return false end
+        if self.resultConnection then return true end
+        local event=child(child(child(RS,'endpoints'),'server_to_client'),'game_finished')
+        if not event or not event:IsA('RemoteEvent') then self.resultWatchState='unavailable';return false end
+        local token={};self.resultWatchToken=token
+        local ok,connection=pcall(function()
+            return event.OnClientEvent:Connect(function(data)
+                if not self.alive or self.resultWatchToken~=token then return end
+                local w=number(WS,{'_wave_num'}) or 0
+                if w<=0 or not self.stage then self.resultEventReport='Event outside an identified active round';return end
+                local victory
+                if type(data)=='table' then victory=rawget(data,'victory') end
+                if type(victory)~='boolean' then self.resultEventReport='Unsupported victory type='..type(victory);return end
+                local outcome=victory and 'Victory' or 'Defeat';local run=tostring(self.run)
+                local previous=self.resultEvent
+                if previous and previous.run==run and previous.stage==self.stage then
+                    if previous.outcome~=outcome then previous.ambiguous=true;self.resultEventReport='Conflicting result events' end
+                    return
+                end
+                self.resultEvent={run=run,stage=self.stage,outcome=outcome,at=os.clock(),wave=w}
+                self.resultEventReport='Boolean '..outcome..' event; requires current finished marker'
+                log:add('RESULT EVENT',outcome..' | waiting for current finished marker')
+            end)
+        end)
+        if not ok or not connection then self.resultWatchToken=nil;self.resultWatchState='unavailable';return false end
+        self.resultConnection=connection;self.resultWatchState='on';return true
+    end
+    function A:stopResultWatch()
+        self.resultWatchToken=nil
+        if self.resultConnection then pcall(function() self.resultConnection:Disconnect() end) end
+        self.resultConnection=nil;self.resultWatchState='off'
+    end
     function A:busy() return env.K_AA_NETWORK_PENDING~=nil or env.K_AA_CLIENT_CACHE_PENDING~=nil end
     local function acceptLevel(self,data,source)
         if type(data)~='table' then return false end
@@ -1166,6 +1503,11 @@ return function(C, env, cfg, log)
     end
     function A:issue(kind,args,geometry)
         if not self.alive or self:busy() then return false,'Transport busy/closed' end
+        if kind~='map' then
+            local previous=self.roundToken;local current=syncRound(self)
+            if previous and current~=previous then return false,'Native round changed; refresh before sending' end
+            if self:mutationFenced() then return false,'Prior mutation lacks exact feedback in this round; enter a fresh match' end
+        end
         local remote
         if kind=='map' then remote=child(child(WS,'_MAP_CONFIG'),'GetLevelData')
         else remote=self:remote(({place='spawn_unit',upgrade='upgrade_unit_ingame',replay='set_game_finished_vote'})[kind]) end
@@ -1174,6 +1516,8 @@ return function(C, env, cfg, log)
         end
         local mark={kind=kind,at=os.clock(),run=self.run}
         if kind~='map' then
+            mark.feedbackToken={};mark.feedbackState='awaiting exact readback'
+            env.K_AA_MUTATION_FEEDBACK={roundToken=self.roundToken,token=mark.feedbackToken,kind=kind}
             mark.endpoint=remote.Name;mark.reply='pending'
             mark.redactUuid=geometry and geometry.uuid or (type(args[1])=='string' and args[1] or nil)
             if geometry and geometry.recorded and geometry.pos then
@@ -1211,7 +1555,7 @@ return function(C, env, cfg, log)
             end
         end)
         mark.thread=thread
-        return true
+        return true,nil,mark.feedbackToken
     end
     function A:poll()
         if self.messageMark and (self.run~=self.messageMark.run or os.clock()-self.messageMark.at>8) then disconnectMessages(self) end
@@ -1232,7 +1576,7 @@ return function(C, env, cfg, log)
     function A:observe(now)
         local folder=child(WS,'_UNITS');local waveNode=child(WS,'_wave_num')
         local w=number(WS,{'_wave_num'}) or 0
-        local mapConfig=child(WS,'_MAP_CONFIG');local mapModel=child(WS,'_MAP')
+        local mapConfig=child(WS,'_MAP_CONFIG');local mapModel=child(WS,'_map') or child(WS,'_MAP')
         local started=scalar(WS,{'_waves_started'})
         local finished=scalar(child(WS,'_DATA'),{'GameFinished'})
         local level=type(self.loaderExport)=='table' and rawget(self.loaderExport,'LevelData') or nil
@@ -1244,6 +1588,8 @@ return function(C, env, cfg, log)
             and (child(WS,'_EVOLVE')~=nil or child(WS,'_traits')~=nil)
         local context=lobby and 'Lobby (observed markers)' or
             (folder~=nil and waveNode~=nil and 'Match objects observed' or 'Unknown')
+        syncRound(self,{waveNode=waveNode,w=w,started=started,finished=finished,
+            context=lobby and 'Lobby' or folder and waveNode and 'Match' or 'Unknown'})
         if folder~=self.lastFolder or w<self.lastWave or mapConfig~=self.lastConfig
             or mapModel~=self.lastMap or waveNode~=self.lastWaveNode
             or context~=self.lastContext
@@ -1254,6 +1600,8 @@ return function(C, env, cfg, log)
             self.stageSource='unknown';self.stageName=nil;self.resultHidden=false;self.mapRequested=false
             self.staleLevelData=self.lastLevelData;self.mapAttempts=0;self.nextMapTry=0;self.mapStatus='Not read yet'
             self.mapDeadline=now+30
+            self.resultEvent=nil
+            self.resultEventReport='No current-round result event'
             self.path={};self.previous=setmetatable({},{__mode='k'})
             self.nextInventory=0
         end
@@ -1272,6 +1620,25 @@ return function(C, env, cfg, log)
         local function costs(u)
             local def=type(self.definitions)=='table' and rawget(self.definitions,u.id) or nil
             if type(def)~='table' then return end
+            local farm=rawget(def,'farm_amount');local damage=rawget(def,'damage');local spa=rawget(def,'attack_cooldown')
+            if C.finite(farm) and farm>0 then u.role='farm';u.roleSource='Units.farm_amount'
+            elseif rawget(def,'_show_as_buff_unit')==true then u.role='buff';u.roleSource='Units buff flag'
+            elseif (C.finite(u.damage) and u.damage>0 and C.finite(u.spa) and u.spa>0)
+                or (C.finite(damage) and damage>0 and C.finite(spa) and spa>0) then
+                u.role='combat';u.roleSource='Observed/defined attack stats'
+            else u.role='unknown';u.roleSource='Unclassified' end
+            local upgrades=rawget(def,'upgrade')
+            if C.finite(u.maxLevel) and (u.maxLevel<0 or u.maxLevel%1~=0) then u.maxLevel=nil end
+            if not C.finite(u.maxLevel) and type(upgrades)=='table' then
+                local last,gap,valid=0,false,true
+                for i=1,40 do
+                    local step=rawget(upgrades,i)
+                    if step==nil then gap=true
+                    elseif gap or type(step)~='table' then valid=false;break
+                    else last=i end
+                end
+                if valid and rawget(upgrades,41)==nil and last<40 then u.maxLevel=last;u.maxLevelSource='Units.upgrade contiguous data' end
+            elseif C.finite(u.maxLevel) then u.maxLevelSource='Observed max_upgrade' end
             local base=rawget(def,'cost')
             if C.finite(base) and base>0 then
                 u.baseCost=base
@@ -1279,8 +1646,7 @@ return function(C, env, cfg, log)
                     u.cost=base*costScale;u.costSource='Units.cost × observed player_cost_scale'
                 end
             end
-            if u.nextCost==nil and C.finite(u.level) and u.level>=0 and u.level<=30 and u.level%1==0 then
-                local upgrades=rawget(def,'upgrade')
+            if u.nextCost==nil and C.finite(u.level) and u.level>=0 and u.level<=40 and u.level%1==0 then
                 local step=type(upgrades)=='table' and rawget(upgrades,u.level+1) or nil
                 local nextCost=type(step)=='table' and rawget(step,'cost') or nil
                 if C.finite(nextCost) and nextCost>0 and costScale then
@@ -1354,16 +1720,27 @@ return function(C, env, cfg, log)
             end
         end
         local show,outcome,texts=self:result()
+        local outcomeSource=outcome~='unknown' and 'Visible ResultsUI' or 'unknown'
+        local resultEvent=self.resultEvent
+        if resultEvent and resultEvent.run==tostring(self.run) and resultEvent.stage==self.stage
+            and finished==true and now>=resultEvent.at and now-resultEvent.at<=10 and w>=resultEvent.wave then
+            show=true
+            if resultEvent.ambiguous or (outcome~='unknown' and outcome~=resultEvent.outcome) then
+                outcome='unknown';outcomeSource='Conflicting result evidence'
+            else outcome=resultEvent.outcome;outcomeSource='game_finished.victory + GameFinished' end
+        end
         local s={now=now,run=tostring(self.run),inMatch=folder~=nil and waveNode~=nil and not lobby,context=context,
             started=scalar(WS,{'_waves_started'})==true or w>0,stage=self.stage or 'unknown',
             stageName=self.stageName or 'unknown',stageVerified=self.stage~=nil,stageSource=self.stageSource,
             mode=self.mode or cfg.mode or 'Unknown',modeVerified=self.mode~=nil,
             placeId=game.PlaceId,wave=w,cash=money,cashSource=moneySource,units=units,unitsComplete=unitsComplete,
             towerScan=scan,
+            roundToken=self.roundToken,mutationFence=self:mutationFenced(),
             wallet=wallet,walletSources=walletSources,rawResource=rawResource,
             owned=owned,ownedAt=#owned>0 and now or self.ownedAt,roster=roster,rosterAt=self.rosterAt,
+            rosterComplete=self.rosterComplete,equippedDeclared=self.equippedDeclared,
             costScale=costScale,definitionsAvailable=self.definitions~=nil,mapStatus=self.mapStatus,
-            resources=self.resources,resourcesAt=self.resourcesAt,resultVisible=show or finished==true,outcome=outcome,
+            resources=self.resources,resourcesAt=self.resourcesAt,resultVisible=show or finished==true,outcome=outcome,outcomeSource=outcomeSource,
             resultTexts=texts,enemies=count,pathSamples=#self.path,transportBlocked=self:busy(),
             inventorySource=self.inventorySource}
         if s.inMatch and not s.stageVerified and not self.mapRequested and not self:busy()
@@ -1400,21 +1777,25 @@ return function(C, env, cfg, log)
             'Mode='..fmt(s.mode)..' | observed='..fmt(s.modeVerified),
             'Cash='..fmt(s.cash)..' | source='..fmt(s.cashSource)..' | raw resource='..fmt(s.rawResource),
             'Loaded Units table='..fmt(s.definitionsAvailable)..' | player_cost_scale='..fmt(s.costScale),
+            'Equipment complete='..fmt(s.rosterComplete)..' | declared slots='..fmt(s.equippedDeclared),
             'Map read='..fmt(self.mapStatus)..' | transport pending='..fmt(s.transportBlocked),
+            'Unresolved mutation fence='..fmt(s.mutationFence)..' (survives reload within this executor)',
+            'Outcome='..fmt(s.outcome)..' | source='..fmt(s.outcomeSource)..' | result observer='..fmt(self.resultWatchState)..
+                ' | event='..fmt(self.resultEventReport),
             'Tower scan: examined='..fmt(scan.examined)..' / '..fmt(scan.total)..' | own='..fmt(scan.own)..
                 ' | missing identity='..fmt(scan.missingIdentity)..' | missing position='..fmt(scan.missingPosition)}
         local roster={}
         for _,u in ipairs(s.roster or {}) do
             roster[u.uuid]=u
             rows[#rows+1]='Equipped slot='..fmt(u.slot)..' id='..fmt(u.id)..' | base cost='..fmt(u.baseCost)..
-                ' | effective cost='..fmt(u.cost)..' | source='..fmt(u.costSource)
+                ' | effective cost='..fmt(u.cost)..' | source='..fmt(u.costSource)..' | role='..fmt(u.role)
         end
         for i,u in ipairs(s.units or {}) do
             if i>24 then rows[#rows+1]='Additional towers omitted';break end
             local r=roster[u.uuid]
             rows[#rows+1]='Tower '..i..' id='..fmt(u.id)..' | exact equipped match='..
                 tostring(r~=nil and r.id==u.id)..' | position='..tostring(u.pos~=nil)..' | upgrade='..fmt(u.level)..
-                ' | next cost='..fmt(u.nextCost)..' | source='..fmt(u.nextCostSource)..
+                ' | next cost='..fmt(u.nextCost)..' | max='..fmt(u.maxLevel)..' | source='..fmt(u.nextCostSource)..
                 ' | DMG='..fmt(u.damage)..' SPA='..fmt(u.spa)..' range='..fmt(u.range)
         end
         for _,kind in ipairs({'spawn_unit','upgrade_unit_ingame'}) do
@@ -1446,7 +1827,7 @@ return function(C, env, cfg, log)
                 ' | elapsed='..tostring(m.elapsed or '?')..' | late='..tostring(m.late or false)
             if m.geometry then rows[#rows+1]='SENT POSITION | recorded='..pointText(m.geometry.recorded)..
                 ' | sent='..pointText(m.geometry.pos)..' | source='..m.geometry.source end
-            rows[#rows+1]='RPC RESPONSE | '..m.reply..' | callOK='..tostring(m.callOK)
+            rows[#rows+1]='RPC RESPONSE | '..m.reply..' | callOK='..tostring(m.callOK)..' | feedback='..tostring(m.feedbackState)
             rows[#rows+1]='SCOPED GAME MESSAGES | observer='..tostring(m.watchState)..' | count='..#m.messages
             for _,v in ipairs(m.messages) do rows[#rows+1]='GAME MESSAGE | '..v end
         end
@@ -1492,8 +1873,65 @@ return function(C, env, cfg, log)
         if p then p.testSlot=slot end
         return p,why
     end
+    function A:recordTeam(s,previous)
+        if not s.modeVerified or s.mode~='Story' then return nil,'Record teams in an observed Story match' end
+        local roster={};for _,u in ipairs(s.roster or {}) do roster[u.uuid]=u end
+        local selected,byUUID,ignored={}, {},0
+        for _,u in ipairs(s.units or {}) do
+            local r=roster[u.uuid]
+            if r and r.id==u.id then selected[#selected+1]=u;byUUID[u.uuid]=u else ignored+=1 end
+        end
+        if #selected==0 then return nil,'Place an equipped unit manually, then record the team' end
+        local snapshot=table.clone(s);snapshot.units=selected
+        local p,why=self:record(snapshot,cfg.recordCosts)
+        if not p then return nil,why end
+        p.kind='team-v1';p.ignoredOwn=ignored
+        local function copyEntry(e)
+            if type(e)~='table' or type(e.uuid)~='string' or type(e.id)~='string' or C.distance(e.pos,e.pos)~=0
+                or not C.finite(e.cost) or e.cost<=0 then return nil end
+            return {uuid=e.uuid,id=e.id,slot=e.slot,pos=table.clone(e.pos),cost=e.cost,costSource=e.costSource,
+                wave=0,role=e.role,roleSource=e.roleSource}
+        end
+        for _,e in ipairs(p.entries) do
+            local u=byUUID[e.uuid];local r=roster[e.uuid]
+            e.role=u.role or r.role or ((C.finite(u.damage) and u.damage>0 and C.finite(u.spa) and u.spa>0) and 'combat' or 'unknown')
+            e.roleSource=u.roleSource or r.roleSource or 'Observed attack stats / unclassified'
+        end
+        if type(previous)=='table' and previous.kind=='team-v1' and C.contextMatches(previous,s) then
+            if previous.costScale~=s.costScale then return nil,'Cost modifier changed; capture a new full team profile' end
+            if type(previous.entries)=='table' then
+                for i,e in ipairs(previous.entries) do
+                    if i>24 then return nil,'Previous profile exceeds 24 placements' end
+                    local r=type(e)=='table' and roster[e.uuid]
+                    if r and r.id==e.id and not byUUID[e.uuid] then
+                        local copy=copyEntry(e)
+                        if not copy then return nil,'Previous team profile contains an invalid target' end
+                        p.entries[#p.entries+1]=copy
+                    end
+                end
+            end
+        end
+        if #p.entries>24 then return nil,'At most 24 recorded team placements' end
+        table.sort(p.entries,function(a,b)
+            local ra,rb=roster[a.uuid],roster[b.uuid]
+            if ra.slot~=rb.slot then return ra.slot<rb.slot end
+            return a.pos[1]==b.pos[1] and a.pos[3]<b.pos[3] or a.pos[1]<b.pos[1]
+        end)
+        return p
+    end
+    function A:checkTeamSurface(p,s)
+        if not C.contextMatches(p,s) or type(p.entries)~='table' or #p.entries<1 or #p.entries>24 then
+            return false,'Invalid team stage/profile'
+        end
+        for i,e in ipairs(p.entries) do
+            local pos,why=self:placementSurface(e.pos,e.id)
+            if not pos then return false,'Target '..i..' '..tostring(e.id)..': '..tostring(why) end
+        end
+        return true
+    end
     function A:close()
         disconnectMessages(self)
+        self:stopResultWatch()
         self.alive=false;self.clientService=nil;self.clientBinding=nil;self.loaderExport=nil;self.definitions=nil
     end
     return A
@@ -1629,8 +2067,14 @@ return function(app)
     label('EVOLUTION','Reported sources: Sacred Treasure from Shibuya Portals; fruit from current fruit challenges. Current eligibility, quantities, prices and recipes need live verification. Evolution and material purchases stay manual.')
     label('FARM',function() return app:farmText() end,colors.text)
     button('FARM','READ MATCH DATA + COPY COMBAT REPORT',function() app:readMatchData() end)
+    label('FARM',function() return app.team:text(app.snapshot,app.teamProfile) end,colors.text)
+    label('FARM','RECORDED STORY TEAM\nPlace each equipped unit manually once, then record. Partial captures save automatically; repeat as more slots are placed. Team Auto requires every equipped slot and uses those spots in the same stage. Other units/replay still need supervised live testing.')
+    button('FARM','RECORD + SAVE TEAM POSITIONS',function() app:recordTeam() end)
+    button('FARM','CHECK TEAM READINESS',function() app:checkTeam() end)
+    button('FARM',function() return app.team.armed and 'STOP TEAM AUTO' or 'START TEAM AUTO • EXPERIMENTAL STORY' end,function() app:toggleTeam() end)
+    button('FARM','COPY TEAM REPORT',function() app:copyTeamReport() end)
     label('FARM','First combat test: enter a free Story stage, start waves and place one equipped unit manually. Then read match data here. Compare cash/costs with the game. This action stops combat and sends no placement or upgrade.')
-    button('FARM',function() return app.engine.armed and 'STOP FULL AUTO' or 'FULL AUTO: OFF • EXPERIMENTAL COMBAT' end,function() app:toggleFarm() end)
+    button('FARM',function() return app.engine.armed and 'STOP RUKIA ROUTE AUTO' or 'RUKIA ROUTE AUTO: OFF • UNVERIFIED' end,function() app:toggleFarm() end)
     button('FARM','CHECK READINESS',function() app:checkReady() end)
     button('FARM','RECORD CURRENT OWN PLACEMENTS',function() app:record() end)
     label('FARM','SINGLE-ACTION STORY TESTS\nRecord one tower from the selected slot; other defenders may stay placed. These buttons spend the displayed match Yen once and stop. Keep Full Auto OFF; leave the game controls alone during the 8-second readback. The report copies automatically. A successful test does not confirm a Rukia farming route.')
@@ -1655,6 +2099,7 @@ return function(app)
     label('FARM','Automatic dungeon room choices, chests, keys, target priority, skills and queueing: UNAVAILABLE. Random tower event modes need their own adapter. Recorded positions are user data, not a map datamine.')
     button('REPORTS','COPY COMPLETE REPORT',function() app:copyReport() end)
     button('REPORTS','COPY COMBAT REPORT',function() app:copyCombatReport() end)
+    button('REPORTS','COPY TEAM REPORT',function() app:copyTeamReport() end)
     button('REPORTS','SCAN DATA PATHS + COPY REPORT',function() app:scanPathsAndCopy() end)
     button('REPORTS','SAVE BOUNDED REPORT LOCALLY',function() app:saveReport() end)
     label('REPORTS',function() return app:reportStatus() end,colors.text)
@@ -1687,7 +2132,8 @@ return function(app)
         if not self.alive then return end
         for _,row in ipairs(self.labels) do row.x.Text=tostring(row.fn()) end
         for _,row in ipairs(self.buttons) do row.x.Text=tostring(row.fn()) end
-        footer.Text=app.engine.state..' • '..tostring(app.status):sub(1,140)
+        local active=app.team.armed and app.team or app.engine
+        footer.Text=active.state..' • '..tostring(app.status):sub(1,140)
         local cam=workspace.CurrentCamera
         if cam then
             scale.Scale=math.clamp(math.min(cam.ViewportSize.X/380,cam.ViewportSize.Y/550),.5,1)
@@ -1708,6 +2154,7 @@ local C=__modules.core
 local makeAdapter=__modules.roblox
 local makeUI=__modules.ui
 local makeTrial=__modules.trial
+local makeTeam=__modules.team
 local env=(type(getgenv)=='function' and getgenv()) or _G
 local deadline=os.clock()+30
 while not game:IsLoaded() and os.clock()<deadline do task.wait(.1) end
@@ -1734,10 +2181,12 @@ local cfg=C.sanitize(saved.cfg)
 local log=C.logger(240)
 local app={alive=true,cfg=cfg,log=log,profile=type(saved.profile)=='table' and saved.profile or nil,
     trialProfile=type(saved.trialProfile)=='table' and saved.trialProfile or nil,
+    teamProfile=type(saved.teamProfile)=='table' and saved.teamProfile or nil,
     status='Observer only; live compatibility unverified',diskSaved=false,observedWins=0,observedLosses=0,
     reportRun=nil,reportOutcome=nil,lastWave=-1,lastRoster='',lastRefresh=0,lastCheckpoint=0}
 app.engine=C.engine(cfg,log)
 app.trial=makeTrial(C,cfg,log);app.trialQuotes={}
+app.team=makeTeam(C,cfg,log)
 app.recorder=C.recorder(log)
 app.adapter=makeAdapter(C,env,cfg,log)
 local function fmt(x) return x==nil and '?' or tostring(x) end
@@ -1747,6 +2196,7 @@ end
 function app:error(err)
     self.engine:stop('Runtime error; automation stopped')
     self.trial:cancel('Runtime error; single-action result unconfirmed')
+    self:stopTeam('Runtime error; Team stopped')
     self:notice(tostring(err):sub(1,300))
 end
 function app:unit() return C.chooseRukia((self.snapshot or {}).owned,self.cfg.selectedUuid) end
@@ -1808,7 +2258,8 @@ function app:farmText()
 end
 function app:reportStatus()
     return 'Observed wins '..self.observedWins..' | losses '..self.observedLosses..
-        '\nAuto-confirmed placements '..self.engine.placements..' | upgrades '..self.engine.upgrades..
+        '\nRukia-route placements '..self.engine.placements..' | upgrades '..self.engine.upgrades..
+        '\nTeam placements '..self.team.placements..' | upgrades '..self.team.upgrades..
         '\nSaved report: '..tostring(self.diskSaved)..' | retained log lines '..#self.log.lines..
         '\nStage, reward schemas and Android stability require live testing.'
 end
@@ -1822,6 +2273,7 @@ function app:refreshInventory()
     self:notice('Refreshed '..#self.snapshot.owned..' exposed unit records; partial inventory only')
 end
 function app:readClientCache(reportKind)
+    self:stopTeam('Manual cache read requested')
     self.engine:stop('Manual experimental client-cache read','IDLE')
     self.trial:cancel('Client-cache read requested; test cancelled')
     self:notice('Attempting one loaded-client cache read; spending remains unavailable')
@@ -1840,6 +2292,7 @@ function app:readMatchData()
     self:readClientCache('combat')
 end
 function app:nextRukia()
+    self:stopTeam('Selected objective changed')
     local list={}
     for _,u in ipairs((self.snapshot or {}).owned or {}) do
         if C.isRukia(u.id) and u.statScope=='collection' then list[#list+1]=u end
@@ -1850,6 +2303,7 @@ function app:nextRukia()
     self.engine:stop('Selected unit changed','IDLE');self:notice('Selected observed Rukia '..(idx%#list+1))
 end
 function app:set(key,v)
+    self:stopTeam('Settings changed')
     self.trial:cancel('Settings changed; test cancelled')
     if self.engine.armed then self.engine:stop('Settings changed; review before rearming','IDLE') end
     local limits={reserve={0,1000000},maxRuns={1,100},maxSeconds={30,7200},traitCap={0,1000},statCap={0,1000}}
@@ -1861,6 +2315,7 @@ function app:set(key,v)
     end
 end
 function app:cycle(key,values)
+    self:stopTeam('Target/mode changed')
     self.trial:cancel('Target/mode changed; test cancelled')
     self.engine:stop('Target/mode changed; review before rearming','IDLE')
     cfg[key]=values[(table.find(values,cfg[key]) or 0)%#values+1]
@@ -1868,6 +2323,7 @@ function app:cycle(key,values)
     cfg.routeConfirmed=false;cfg.protocolConfirmed=false;cfg.replayFreeConfirmed=false
 end
 function app:toggle(key)
+    self:stopTeam('Settings changed')
     self.trial:cancel('Settings changed; test cancelled')
     self.engine:stop('Settings changed; review before rearming','IDLE')
     if table.find({'routeConfirmed','protocolConfirmed','replayFreeConfirmed'},key) and not cfg[key] then
@@ -1884,6 +2340,9 @@ end
 function app:toggleFarm()
     if self.engine.armed then self.engine:stop('Stopped by user','IDLE');return end
     self.snapshot=self.adapter:observe(os.clock())
+    if self.team.armed or self.team.pending or self.team.uncertainRun==self.snapshot.run then
+        self:notice('Team controller active/unconfirmed; inspect its report before Rukia-route automation');return
+    end
     if self.trial.pending or (self.trial.state=='UNCONFIRMED' and self.trial.attemptRun==self.snapshot.run) then
         self:notice('Single-action test pending or unconfirmed; inspect its report before farming');return
     end
@@ -1895,6 +2354,7 @@ function app:toggleFarm()
     else self:notice(self.engine.reason) end
 end
 function app:record()
+    self:stopTeam('Rukia profile recording requested')
     self.engine:stop('Recording requested','IDLE')
     self.trial:cancel('Recording changed; test cancelled')
     self.snapshot=self.adapter:observe(os.clock())
@@ -1912,6 +2372,7 @@ function app:trialButton(kind)
         (kind=='upgrade' and (quote.level..'→'..(quote.level+1)..' | ') or '| ')..quote.cost..' YEN'
 end
 function app:recordTrialTarget()
+    self:stopTeam('Single-action target recording requested')
     self.engine:stop('Recording single-action test target','IDLE')
     self.trial:cancel('Test target changed; pending result unconfirmed')
     self.snapshot=self.adapter:observe(os.clock())
@@ -1921,22 +2382,76 @@ function app:recordTrialTarget()
     self:notice('Recorded test target '..p.entries[1].id..' from equipped slot '..cfg.trialSlot)
 end
 function app:runTrial(kind)
-    if self.engine.armed or self.engine.pending then self:notice('Keep Full Auto OFF for a single-action test');return end
+    if self.engine.armed or self.engine.pending or self.team.armed or self.team.pending then
+        self:notice('Keep automatic controllers OFF for a single-action test');return
+    end
     self.snapshot=self.adapter:observe(os.clock())
+    if self.team.uncertainRun==self.snapshot.run or self.engine.uncertainRun==self.snapshot.run then
+        self:notice('Prior automatic action unconfirmed; enter a fresh match');return
+    end
     local action,why=self.trial:begin(kind,self.snapshot,self.trialProfile,self.trialQuotes[kind])
     if not action then self:notice(why);return end
     self.awaitTrialCopy=true
-    local sent,err=self.adapter:dispatch(action)
+    local sent,err,token=self.adapter:dispatch(action)
+    if sent and self.trial.pending then self.trial.pending.feedbackToken=token end
     if not sent then self.trial:cancel('Test request not sent: '..tostring(err));self:notice(err)
     else self:notice('One test request sent; wait up to 8 seconds without manual placement/upgrades. Report copies automatically.') end
 end
 function app:stopTrial()
     self.trial:cancel('Stopped by user; result unconfirmed')
 end
+function app:tickController(controller,s,p)
+    local pending=controller.pending;local placements=controller.placements or 0;local upgrades=controller.upgrades or 0
+    local action=controller:tick(s,p)
+    if pending and pending.feedbackToken and pending~=controller.pending
+        and ((controller.placements or 0)>placements or (controller.upgrades or 0)>upgrades) then
+        self.adapter:confirmMutation(pending.feedbackToken)
+    end
+    return action
+end
+function app:stopTeam(reason)
+    if self.team.armed or self.team.pending then self.team:stop(reason or 'Stopped by user','IDLE') end
+    self.adapter:stopResultWatch()
+end
+function app:recordTeam()
+    self:stopTeam('Team recording requested')
+    self.engine:stop('Team recording requested','IDLE');self.trial:cancel('Team recording requested')
+    self.snapshot=self.adapter:observe(os.clock())
+    local p,why=self.adapter:recordTeam(self.snapshot,self.teamProfile)
+    if not p then self:notice(why);return end
+    self.teamProfile=p
+    local count,total=self.team:coverage(self.snapshot,p)
+    local savedOK=self:saveSettings()
+    self:notice('Recorded team slots '..count..'/'..total..' | '..#p.entries..' positions | '..
+        (savedOK and 'saved; Auto remains OFF' or 'local saving failed; profile is only in this session'))
+end
+function app:checkTeam()
+    self.snapshot=self.adapter:observe(os.clock())
+    local b=self.team:readiness(self.snapshot,self.teamProfile)
+    self:notice(#b==0 and 'Team prerequisites present; supervise the first run' or table.concat(b,'; '))
+end
+function app:toggleTeam()
+    if self.team.armed then self:stopTeam('Stopped by user');return end
+    self.snapshot=self.adapter:observe(os.clock());local s=self.snapshot
+    if self.engine.armed or self.engine.pending or self.trial.pending or self.engine.uncertainRun==s.run
+        or (self.trial.state=='UNCONFIRMED' and self.trial.attemptRun==s.run) then
+        self:notice('Another controller is active/unconfirmed; stop it and inspect the report');return
+    end
+    local b=self.team:readiness(s,self.teamProfile)
+    if #b>0 then self:notice(table.concat(b,'; '));return end
+    if not self.adapter:remote('spawn_unit') or (cfg.upgrade and not self.adapter:remote('upgrade_unit_ingame')) then
+        self:notice('Team action endpoint missing');return
+    end
+    local geometryOK,why=self.adapter:checkTeamSurface(self.teamProfile,s)
+    if not geometryOK then self:notice(why);self:copyTeamReport();return end
+    if self.team:arm(s,self.teamProfile) then
+        self.adapter:watchResults();self:notice('Experimental Story Team Auto armed; supervise this run')
+    else self:notice(self.team.reason) end
+end
 function app:saveSettings()
     if type(writefile)~='function' then self:notice('Local file saving unavailable');return false end
     local ok=pcall(function() writefile(filename,HTTP:JSONEncode({cfg=cfg,profile=self.profile,
-        trialProfile=self.trialProfile,version=C.version})) end)
+        trialProfile=self.trialProfile,teamProfile=self.teamProfile,version=C.version})) end)
     self:notice(ok and 'Settings saved; Auto remains OFF on reload' or 'Settings save failed')
     return ok
 end
@@ -1946,6 +2461,7 @@ function app:completeReport()
         self:ownershipText(),self:objectiveText(),self:walletText(),self:traitText(),self:statsText(),self:evolutionText(),
         self:farmText(),self:reportStatus(),
         self.trial:text(),
+        self.team:text(s,self.teamProfile),
         'Place ID: '..fmt(s.placeId),'Inventory source: '..fmt(s.inventorySource),'Currency source: '..fmt(s.cashSource),
         self.adapter:combatReport(s),
         self.adapter.cacheReport or 'CLIENT CACHE READER: not attempted; use RUKIA → READ CLIENT CACHE + COPY REPORT',
@@ -1968,6 +2484,7 @@ function app:completeReport()
     return table.concat(out,'\n'):sub(1,65536)
 end
 function app:scanPathsAndCopy()
+    self:stopTeam('Manual metadata diagnostic requested')
     self.engine:stop('Manual data-path diagnostic','IDLE')
     self:notice('Collecting bounded metadata; inventory values stay protected')
     local result,err=self.adapter:probePaths()
@@ -1994,8 +2511,26 @@ function app:copyCombatReport()
         local ok=pcall(setclipboard,text);self:notice(ok and 'Combat report copied' or 'Clipboard failed')
     else print(text);self:notice('Clipboard unavailable; combat report printed') end
 end
+function app:copyTeamReport()
+    self.snapshot=self.adapter:observe(os.clock());local s=self.snapshot
+    local b=self.team:readiness(s,self.teamProfile)
+    local out={'[K] AA TEAM '..C.version..' | EXPERIMENTAL STORY CONTROL',
+        self.team:text(s,self.teamProfile),self.adapter:combatReport(s),
+        self.adapter.cacheReport or 'Client cache not connected',
+        'TEAM READINESS: '..(#b==0 and 'physical/profile prerequisites present' or table.concat(b,'; ')),
+        'Team control does not verify a Rukia reward route. Premium mutations and dungeon navigation remain unavailable.'}
+    for i,e in ipairs(type(self.teamProfile)=='table' and type(self.teamProfile.entries)=='table' and self.teamProfile.entries or {}) do
+        if i>24 then break end
+        if type(e)~='table' then out[#out+1]='Invalid recorded target';break end
+        out[#out+1]='Target '..i..' slot='..fmt(e.slot)..' id='..fmt(e.id)..' role='..fmt(e.role)..' deployment quote='..fmt(e.cost)
+    end
+    out[#out+1]=self.log:text();local text=table.concat(out,'\n'):sub(1,65536)
+    if type(setclipboard)=='function' then
+        local ok=pcall(setclipboard,text);self:notice(ok and 'Team report copied' or 'Clipboard failed')
+    else print(text);self:notice('Clipboard unavailable; Team report printed') end
+end
 function app:copyConfig()
-    local txt=HTTP:JSONEncode({cfg=cfg,profile=self.profile,trialProfile=self.trialProfile})
+    local txt=HTTP:JSONEncode({cfg=cfg,profile=self.profile,trialProfile=self.trialProfile,teamProfile=self.teamProfile})
     if type(setclipboard)=='function' then pcall(setclipboard,txt);self:notice('Configuration copied; includes unit UUIDs')
     else self:notice('Clipboard unavailable') end
 end
@@ -2008,6 +2543,7 @@ function app.stop()
     if not app.alive then return end
     app.engine:stop('Closed by user or replaced by new instance','IDLE')
     app.trial:cancel('Closed or replaced; result unconfirmed')
+    app.team:stop('Closed or replaced','IDLE')
     app.alive=false;app.adapter:close()
     if app.ui then app.ui:close() end
     if type(writefile)=='function' then
@@ -2038,7 +2574,7 @@ task.spawn(function()
         local ok,err=pcall(function()
             local now=os.clock();local s=app.adapter:observe(now);app.snapshot=s
             local failure=app.adapter:poll()
-            if failure then app.engine:reject(failure);app.trial:cancel(failure);app:notice(failure) end
+            if failure then app.engine:reject(failure);app.team:reject(failure);app.adapter:stopResultWatch();app.trial:cancel(failure);app:notice(failure) end
             if app.awaitCacheCopy and app.adapter.cacheDone then
                 local kind=app.awaitCacheCopy;app.awaitCacheCopy=false
                 if kind=='combat' then app:copyCombatReport() else app:copyReport() end
@@ -2049,15 +2585,21 @@ task.spawn(function()
             for _,u in ipairs(s.roster) do roster[#roster+1]=fmt(u.slot)..':'..u.id end
             local signature=table.concat(roster,',')
             if signature~=app.lastRoster then app.lastRoster=signature;log:add('EQUIPPED OBSERVED',signature) end
-            app.trial:tick(s)
+            app:tickController(app.trial,s)
             if app.awaitTrialCopy and not app.trial.pending then
                 app.awaitTrialCopy=false;app:copyCombatReport()
             end
-            local request=app.engine:tick(s,app.profile)
+            local controller=app.team.armed and app.team or app.engine
+            local request
+            if controller==app.team then request=app:tickController(app.team,s,app.teamProfile)
+            else request=app:tickController(app.engine,s,app.profile) end
             if request then
-                local sent,why=app.adapter:dispatch(request)
-                if not sent then app.engine:reject(why) else log:add('ATTEMPT',request.kind..' | awaiting live feedback') end
+                local sent,why,token=app.adapter:dispatch(request)
+                if sent and controller.pending then controller.pending.feedbackToken=token end
+                if not sent then controller:reject(why) else log:add('ATTEMPT',request.kind..' | awaiting live feedback') end
             end
+            if not app.team.armed then app.adapter:stopResultWatch() end
+            if app.team.reportDue then app.team.reportDue=false;app:copyTeamReport() end
             if now-app.lastRefresh>=2 then app.lastRefresh=now;app.ui:refresh() end
         end)
         if not ok then app:error(err) end

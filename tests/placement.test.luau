@@ -9,7 +9,7 @@ local function node(name,class,kids)
     function x:FindFirstChild(k) for _,v in ipairs(self.kids) do if v.Name==k then return v end end end
     function x:GetChildren() return self.kids end
     function x:GetAttribute() return nil end
-    function x:IsA(k) return self.ClassName==k end
+    function x:IsA(k) return self.ClassName==k or k=='ValueBase' and self.ClassName:find('Value')~=nil end
     function x:IsDescendantOf(parent)
         local at=self.Parent
         for _=1,16 do if at==parent then return true end;if not at then break end;at=at.Parent end
@@ -59,7 +59,12 @@ local function world(reply)
         CFrame={new=function(...) return {...} end},RaycastParams={new=function() return {} end},
         Enum={RaycastFilterType={Include='Include'}}}
     setfenv(factory,setmetatable(apis,{__index=getfenv()}))
-    w.a=factory(C,{},C.sanitize({}),C.logger());w.a.run=1
+    w.env={}
+    function w:newAdapter()
+        local a=factory(C,self.env,C.sanitize({}),C.logger());a.run=1;a.definitions={bulma={cost=800}}
+        return a
+    end
+    w.a=w:newAdapter()
     w.a.definitions={bulma={cost=800},hill_unit={cost=1000,hill_unit=true},hybrid={cost=500,hybrid_placement=true}}
     function w:time(t) clock=t end
     function w:flush() assert(coroutine.resume(self.tasks[#self.tasks])) end
@@ -124,7 +129,8 @@ check('message output is bounded and closing disconnects the observer',function(
     w.a:close();assert(w.event:count()==0)
 end)
 check('replacing the scoped message observer does not duplicate listeners',function()
-    local w=world();assert(w.a:dispatch(w:action()));w:flush()
+    local w=world();local sent,_,token=w.a:dispatch(w:action());assert(sent);w:flush()
+    assert(w.a:confirmMutation(token))
     assert(w.a:dispatch(w:action()));assert(w.event:count()==1)
 end)
 check('late responses from a previous run do not reject a new run',function()
@@ -152,5 +158,40 @@ check('upgrade replies and messages redact an explicit noncanonical unit key',fu
     assert(w.a:dispatch({kind='upgrade',key=model,uuid=key}));w:flush()
     local report=w.a:actionReport()
     assert(report:find('Reason',1,true) and not report:find(key,1,true))
+end)
+check('a returned RPC without exact feedback stays fenced across close and reload',function()
+    local w=world();assert(w.a:dispatch(w:action()));w:flush();w.a:close()
+    local replacement=w:newAdapter()
+    assert(not replacement:dispatch(w:action()) and w.rpcCalls==1)
+end)
+check('only the matching observed-feedback token releases the same-round fence',function()
+    local w=world();local sent,_,token=w.a:dispatch(w:action());assert(sent);w:flush()
+    assert(not w.a:confirmMutation({}));assert(w.a:confirmMutation(token))
+    local replacement=w:newAdapter();local sent2,_,token2=replacement:dispatch(w:action());assert(sent2);w:flush()
+    assert(not replacement:confirmMutation(token))
+    assert(not replacement:dispatch(w:action()));assert(replacement:confirmMutation(token2))
+end)
+check('an observed native wave reset releases old uncertainty without trusting local run numbers',function()
+    local w=world();local wave=node('_wave_num','IntValue');wave.Value=5
+    local units=node('_UNITS');w.ws.kids[#w.ws.kids+1]=wave;w.ws.kids[#w.ws.kids+1]=units
+    assert(w.a:dispatch(w:action()));w:flush();w.a:close();wave.Value=0
+    local replacement=w:newAdapter();assert(replacement:dispatch(w:action()));w:flush();assert(w.rpcCalls==2)
+end)
+check('local run changes and newly arriving map metadata cannot release an unresolved native action',function()
+    local w=world();local wave=node('_wave_num','IntValue');wave.Value=5
+    w.ws.kids[#w.ws.kids+1]=wave;w.ws.kids[#w.ws.kids+1]=node('_UNITS')
+    assert(w.a:dispatch(w:action()));w:flush()
+    w.a.run=99;w.a.loaderExport={LevelData={id='new-wrapper'}}
+    w.ws.kids[#w.ws.kids+1]=node('_map','Model')
+    assert(not w.a:dispatch(w:action()) and w.rpcCalls==1)
+end)
+check('read-only stage requests remain available without clearing mutation uncertainty',function()
+    local w=world();assert(w.a:dispatch(w:action()));w:flush()
+    local remote=node('GetLevelData','RemoteFunction')
+    function remote:InvokeServer() return {id='namek_level_1',_gamemode='story'} end
+    w.ws.kids[#w.ws.kids+1]=node('_MAP_CONFIG','Folder',{remote})
+    assert(w.a:issue('map',{}));w:flush()
+    assert(w.a.stage=='namek_level_1' and w.a:mutationFenced())
+    assert(not w.a:dispatch(w:action()) and w.rpcCalls==1)
 end)
 print('All '..n..' placement tests passed')

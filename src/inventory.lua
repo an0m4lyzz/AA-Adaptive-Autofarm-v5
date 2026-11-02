@@ -53,7 +53,8 @@ return function(C)
         return u
     end
     function I.read(service,userId)
-        local out={valid=false,owned={},roster={},resources={},truncated=false,rejected=0,reason='Client schema unavailable'}
+        local out={valid=false,owned={},roster={},resources={},truncated=false,rejected=0,
+            equippedComplete=false,equippedDeclared=0,reason='Client schema unavailable'}
         local session=tableAt(service,'session')
         local profile=tableAt(session,'profile_data')
         local collection=tableAt(tableAt(session,'collection'),'collection_profile_data')
@@ -78,17 +79,28 @@ return function(C)
         end
         local equipped=tableAt(collection,'equipped_units')
         if equipped then
+            out.equippedComplete=true
+            local key=nil
+            for i=1,32 do
+                key=next(equipped,key);if key==nil then break end
+                local slot=type(key)=='number' and key or type(key)=='string' and tonumber(key)
+                if not C.finite(slot) or slot%1~=0 or slot<1 or slot>8
+                    or (type(key)=='string' and key~=tostring(slot)) then out.equippedComplete=false end
+                if i==32 and next(equipped,key)~=nil then out.equippedComplete=false end
+            end
             for slot=1,8 do
                 local numeric=rawget(equipped,slot)
                 local named=rawget(equipped,tostring(slot))
                 local ambiguous=numeric~=nil and named~=nil and numeric~=named
                 local uuid=numeric;if uuid==nil then uuid=named end
-                if ambiguous then out.rejected+=1;uuid=nil end
+                if uuid~=nil then out.equippedDeclared+=1 end
+                if ambiguous then out.rejected+=1;out.equippedComplete=false;uuid=nil end
                 local u=add(uuid)
                 if u then
                     -- A UUID occupying multiple slots is ambiguous, so never
                     -- manufacture a second equipped record for it.
-                    if u.slot then out.rejected+=1 else u.slot=slot;out.roster[#out.roster+1]=u end
+                    if u.slot then out.rejected+=1;out.equippedComplete=false else u.slot=slot;out.roster[#out.roster+1]=u end
+                elseif uuid~=nil then out.equippedComplete=false
                 end
             end
         end

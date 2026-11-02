@@ -87,4 +87,21 @@ check('bound registry replacement follows the current module export',function()
     assert(I.current(found)==newer)
     registry.StatsServiceClient=nil;assert(I.current(found)==nil)
 end)
+check('declared equipment with a missing owned record is incomplete',function()
+    local raw=service();raw.session.collection.collection_profile_data.equipped_units={[1]='a',[2]='missing'}
+    local s=I.read(raw,12)
+    assert(#s.roster==1 and s.equippedDeclared==2 and s.equippedComplete==false)
+end)
+check('ambiguous duplicate or unsupported slots cannot certify equipment completeness',function()
+    local raw=service();local c=raw.session.collection.collection_profile_data
+    c.equipped_units={[1]='a',[2]='a'};assert(I.read(raw,12).equippedComplete==false)
+    c.equipped_units={[1]='a',[9]='b'};assert(I.read(raw,12).equippedComplete==false)
+    c.equipped_units={[1]='a',['1']='b'};assert(I.read(raw,12).equippedComplete==false)
+end)
+check('complete declared equipment is distinct from partial ownership coverage',function()
+    local raw=service();local c=raw.session.collection.collection_profile_data
+    c.owned_units.bad={unit_id=false}
+    local s=I.read(raw,12)
+    assert(s.equippedComplete==true and s.equippedDeclared==2 and #s.roster==2 and s.rejected>0)
+end)
 print('All '..n..' inventory tests passed')

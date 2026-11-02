@@ -514,4 +514,98 @@ check('multiple copies in a selected test slot cannot choose an arbitrary target
     local copy=table.clone(s.units[1]);copy.key='another';copy.pos={20,2,20};s.units[#s.units+1]=copy
     assert(not a:recordTestTarget(s,4))
 end)
+check('team capture merges compatible partial slots and replaces a captured group',function()
+    local a,_,_,_,s=trialWorld();local first=a:recordTeam(s,nil)
+    assert(first and first.kind=='team-v1' and #first.entries==1)
+    s.roster[2]={uuid='defender',id='nagumo_evolved',slot=1,cost=1300}
+    s.units={{uuid='defender',id='nagumo_evolved',key='defender',pos={20,2,20},role='combat'}}
+    local merged=a:recordTeam(s,first);assert(merged and #merged.entries==2)
+    s.units[1].pos={25,2,20};local replaced=a:recordTeam(s,merged)
+    assert(replaced and #replaced.entries==2)
+    for _,e in ipairs(replaced.entries) do assert(e.key==nil);if e.id=='nagumo_evolved' then assert(e.pos[1]==25) end end
+end)
+check('team capture ignores helper IDs and removes no-longer-equipped copies',function()
+    local a,_,_,_,s=trialWorld();local first=a:recordTeam(s,nil);assert(first)
+    s.roster={{uuid='d',id='defender',slot=1,cost=500}}
+    s.units={{uuid='d',id='helper',key='helper',pos={1,2,3}},
+        {uuid='d',id='defender',key='real',pos={20,2,20},damage=100,spa=2}}
+    local p=a:recordTeam(s,first)
+    assert(p and #p.entries==1 and p.entries[1].id=='defender' and p.ignoredOwn==1)
+end)
+check('team capture cannot merge across incompatible cost modifiers',function()
+    local a,_,_,_,s=trialWorld();s.costScale=1;local first=a:recordTeam(s,nil);assert(first)
+    s.costScale=2;assert(not a:recordTeam(s,first))
+end)
+check('role and maximum-upgrade metadata use explicit current data',function()
+    local a,_,_,ws,_,tasks,_,defs= combatFixture()
+    defs.bulma.farm_amount=200
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    ws.kids[1].kids={node('tower','Model',{}, {node('_stats','Folder',
+        {player_id=12,uuid='unitA',id='bulma',upgrade=0})})}
+    local s=a:observe(10)
+    assert(s.roster[1].role=='farm' and s.units[1].role=='farm' and s.units[1].maxLevel==2)
+    defs.bulma.upgrade[2]=nil;defs.bulma.upgrade[3]={cost=3000}
+    assert(a:observe(11).units[1].maxLevel==nil)
+end)
+local function resultFixture()
+    local clock=10
+    local a,_,_,ws,rs=world({os={clock=function() return clock end}})
+    local wave=node('_wave_num','IntValue');wave.Value=1
+    local data=node('_DATA','Folder',{GameFinished=false})
+    ws.kids={node('_UNITS'),wave,data};a:observe(10);a.stage='namek_level_1';a.mode='Story';a:observe(10)
+    local sig={connections={}}
+    function sig:Connect(fn)
+        local c={active=true,fn=fn};function c:Disconnect() self.active=false end
+        self.connections[#self.connections+1]=c;return c
+    end
+    function sig:fire(value) for _,c in ipairs(self.connections) do if c.active then c.fn(value) end end end
+    function sig:count() local count=0;for _,c in ipairs(self.connections) do if c.active then count+=1 end end;return count end
+    local event=node('game_finished','RemoteEvent');event.OnClientEvent=sig
+    rs.kids={node('endpoints','Folder',{}, {node('server_to_client','Folder',{}, {event})})}
+    local function setClock(value) clock=value end
+    return a,ws,data,wave,sig,setClock
+end
+check('result event observation is explicit and uses only one connection',function()
+    local a,_,_,_,sig=resultFixture();assert(sig:count()==0)
+    assert(a:watchResults() and a:watchResults() and sig:count()==1)
+    a:stopResultWatch();assert(sig:count()==0);sig:fire({victory=true});assert(a.resultEvent==nil)
+end)
+check('server victory requires the current finished marker before confirming an outcome',function()
+    local a,_,data,_,sig,clock=resultFixture();assert(a:watchResults())
+    sig:fire({victory=true});local s=a:observe(11);assert(s.outcome=='unknown' and not s.resultVisible)
+    clock(12);data.attrs.GameFinished=true;s=a:observe(12)
+    assert(s.resultVisible and s.outcome=='Victory' and s.outcomeSource=='game_finished.victory + GameFinished')
+end)
+check('unsupported or conflicting result payloads cannot become a victory',function()
+    local a,_,data,_,sig=resultFixture();assert(a:watchResults());data.attrs.GameFinished=true
+    sig:fire({victory='true'});assert(a:observe(11).outcome=='unknown')
+    sig:fire({victory=true});sig:fire({victory=false});assert(a:observe(11).outcome=='unknown')
+end)
+check('result event data expires and is cleared on a round reset',function()
+    local a,_,data,wave,sig,clock=resultFixture();assert(a:watchResults());sig:fire({victory=true})
+    clock(30);data.attrs.GameFinished=true;assert(a:observe(30).outcome=='unknown')
+    data.attrs.GameFinished=false;wave.Value=0;a:observe(31)
+    assert(a.resultEvent==nil)
+end)
+check('close disconnects the optional result observer',function()
+    local a,_,_,_,sig=resultFixture();assert(a:watchResults());a:close();assert(sig:count()==0)
+end)
+check('a non-table false event is not a confirmed defeat',function()
+    local a,_,data,_,sig=resultFixture();assert(a:watchResults());data.attrs.GameFinished=true
+    sig:fire(false);assert(a:observe(11).outcome=='unknown')
+end)
+check('invalid native maximum falls back to recognized definition data',function()
+    local a,_,_,ws,_,tasks= combatFixture();assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    ws.kids[1].kids={node('tower','Model',{}, {node('_stats','Folder',
+        {player_id=12,uuid='unitA',id='bulma',upgrade=0,max_upgrade=-1})})}
+    assert(a:observe(10).units[1].maxLevel==2)
+end)
+check('native snapshots retain incomplete declared equipment instead of certifying parsed survivors',function()
+    local a,_,_,_,_,tasks=combatFixture()
+    assert(a:startClientCache());assert(coroutine.resume(tasks[1]))
+    local s=a:observe(10);assert(s.rosterComplete and s.equippedDeclared==1)
+    a.clientService.session.collection.collection_profile_data.equipped_units[2]='not-in-owned-cache'
+    s=a:observe(15)
+    assert(#s.roster==1 and s.equippedDeclared==2 and not s.rosterComplete)
+end)
 print('All '..n..' adapter tests passed')

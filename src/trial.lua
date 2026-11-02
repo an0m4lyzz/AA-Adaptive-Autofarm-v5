@@ -5,6 +5,7 @@ return function(C,cfg,log)
     function T:quote(kind,s,p)
         if kind~='place' and kind~='upgrade' then return nil,'Unsupported test action' end
         if self.pending or s.transportBlocked then return nil,'A request/test is still pending' end
+        if s.mutationFence then return nil,'Prior mutation lacks exact feedback; enter a fresh match' end
         if self.state=='UNCONFIRMED' and self.attemptRun==s.run then
             return nil,'Previous test unconfirmed; inspect the report and enter a fresh match'
         end

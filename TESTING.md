@@ -6,7 +6,24 @@ Restart Roblox after older injections. Execute the unchanged loadstring once in 
 
 Only after a stable observer test, try one re-execution: the old GUI must disappear and one new GUI remain. Closing must stop updates and dragging. If it crashes before the GUI, stop repeated injection; offline syntax tests cannot diagnose that crash.
 
-## Current next test: placement feedback (v6.0.7)
+## Current test: equipped Story team (v6.1.0)
+
+The user's v6.0.7 report observes the exact scripted Bulma placement with RPC true, cash 900→100 and a new matching own tower. Earlier reports observe scripted upgrades. Other units, full clears and replay still need live validation.
+
+1. Join the same free Story stage, run the unchanged loadstring and confirm **6.1.0**. Tap FARM → **READ MATCH DATA + COPY COMBAT REPORT** once. Compare all six current slots and prices with the game.
+2. Start waves and manually place at least one copy of every equipped unit where you want it. Tap **RECORD + SAVE TEAM POSITIONS**. You may record partial teams as money arrives; each compatible capture merges and saves. The current captured copies of a unit replace that unit's previous recorded group, so include all copies you intend to keep. Require **Recorded slots 6 / 6** and a saved status before leaving.
+3. Enter a fresh copy of the same Story stage, load again and read match data. The saved team restores, but Auto remains OFF. Start waves; leave replay OFF, max runs 1 and a short session timeout. Do not sell Bulma.
+4. Tap **CHECK TEAM READINESS**, then **START TEAM AUTO**. An affordable recorded combat unit is preferred; otherwise one farm may open while the controller saves for combat. It fills the recorded team before upgrading by observed level and affordable price. This is a deterministic baseline, not a proven optimal strategy.
+5. Observe exact placement/upgrade feedback without making simultaneous manual changes. A rejected request, ambiguous readback or eight-second timeout stops automation. Missing upgrade data stops after a bounded wait rather than claiming maximum level.
+6. Tap **COPY TEAM REPORT** after the run or blocker. A team stop also attempts to copy it automatically. Verify its outcome against the actual game. Keep replay OFF until a supervised clear and result detection work.
+
+Every declared equipped slot must resolve from the cache and have a matching profile target. Partial/missing/conflicting equipped records block arming even if the parsed survivors all have recorded positions. A tower cannot satisfy two targets; same-unit recorded spots within three studs are rejected as ambiguous. Profile limit 24; incomplete tower scans, unsupported terrain, changed prices/modifiers/stage and stale equipment also block.
+
+The optional exact game_finished listener starts only when Team Auto arms and disconnects on stop/close. A raw boolean victory must belong to the current run and agree with its finished marker; conflicting or stale evidence stays unknown. A replay must clear the result and recorded towers and show both a changed run and actual native round identity before spending again. Team replay is Story-only, opt-in, stage-confirmed free and capped.
+
+Stopping cannot undo a sent request. An unresolved-action fence survives script close/reload in the same executor after the RPC returns. Only exact controller readback or an actual native reset releases it; reloading, local run counters and newly arriving map metadata do not. Enter a fresh match after unconfirmed feedback. This fence is in memory and does not survive a full Roblox process restart.
+
+## Earlier placement-boundary test (v6.0.7)
 
 The user observed scripted Bulma upgrades, then a placement timeout in a fresh namek_level_1 run with no own tower. The old report does not reveal the RPC return or saved position. v6.0.7 corrects the suspected model-centre/terrain-surface height input and records those missing boundary observations. The actual cause and successful placement still need live confirmation.
 
@@ -19,7 +36,7 @@ The raycast uses only the saved X/Z and observed _terrain, not an enemy path or 
 
 RPC summaries contain at most two returns and whitelisted scalar table fields; unit UUIDs are redacted. Lua callOK means the native call did not throw, not that the game placed a unit. The exact show_message listener is optional, action-scoped, at most eight seconds/four bounded messages and cleaned on replacement/close. A message in the window may have another cause. No response or warning can replace exact own-model/identity/position confirmation.
 
-## Next test: combat data (v6.0.4)
+## Earlier combat-data test (v6.0.4)
 
 The user's v6.0.3 report already recognized 77 owned records and six equipped slots. Do not repeat a broad lobby metadata scan.
 
@@ -30,7 +47,7 @@ The user's v6.0.3 report already recognized 77 owned records and six equipped sl
 
 Missing scale or definitions leaves computed costs unknown. Do not enable combat to bypass a blocker. The focused report names the missing source. Dungeon access, keys and rewards are not part of this free test.
 
-## Current next test: one upgrade (v6.0.5)
+## Earlier one-upgrade test (v6.0.5)
 
 The submitted v6.0.4 report now observes namek_level_1, Story, cash 400, explicit cost scale 1, all six prices and Bulma's exact identity, position and next quote of 1,500 Yen. The read-only adapter boundary is demonstrated for that session. No automated placement or upgrade has been demonstrated yet.
 
@@ -99,7 +116,7 @@ If anything differs, stop, close and copy the report. Do not leave it unattended
 
 Verify visible Victory and Defeat manually. Ambiguous/incomplete UI stays unknown; reward text and inventory changes are observations requiring inspection.
 
-Only after reliable supervised clears in an observed free Story/Infinite/Challenge mode, enable replay, confirm no item cost for that exact stage, and raise max runs to 2. Both switches are required; user-selected mode alone cannot authorize replay. Transition waits up to 15 seconds for fresh matching identity. Dungeon/Portal/Raid/Event never replay. All key use, dungeon navigation and chests remain manual.
+Only after reliable supervised clears in observed free Story, enable Team replay, confirm no item cost for that exact stage, and raise max runs to 2. Both switches are required; user-selected mode alone cannot authorize replay. Transition waits up to 15 seconds for fresh matching identity and cleared results. The separate legacy Rukia controller permits observed Story/Infinite/Challenge with its own route gates. Dungeon/Portal/Raid/Event never replay. All key use, dungeon navigation and chests remain manual.
 
 No premium mutation toggle exists because its verified protocol/cost/readback is unavailable. Trait/stat caps are planning limits.
 

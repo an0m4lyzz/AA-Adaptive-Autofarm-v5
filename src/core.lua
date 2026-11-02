@@ -1,6 +1,6 @@
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.7'
+C.version = '6.1.0'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -110,16 +110,15 @@ function C.placementVerified(p,units)
     end
     return found,false
 end
-function C.readiness(s,p,cfg)
+function C.profileReadiness(s,p,cfg)
     local blockers={}
     local function need(ok,msg) if not ok then blockers[#blockers+1]=msg end end
     need(s.inMatch,'Enter a match manually')
     need(s.unitsComplete==true,'Tower observation is incomplete; cannot validate placements safely')
     need(s.stageVerified==true,'Stage identity not observed')
-    need(cfg.routeConfirmed==true and C.contextMatches(cfg.routeContext,s),'Confirm this stage actually advances the Rukia objective')
-    need(cfg.protocolConfirmed==true and C.contextMatches(cfg.protocolContext,s),'Placement protocol needs confirmation for this stage')
     need(s.transportBlocked~=true,'An earlier remote request is still outstanding')
-    need(C.finite(s.rosterAt) and s.now-s.rosterAt<=15,'Fresh equipped UUIDs unavailable')
+    need(s.mutationFence~=true,'Prior mutation lacks exact feedback in this round; enter a fresh match')
+    need(C.finite(s.now) and C.finite(s.rosterAt) and s.now>=s.rosterAt and s.now-s.rosterAt<=15,'Fresh equipped UUIDs unavailable')
     need(C.finite(s.cash),'Live match Yen unknown')
     if type(p)~='table' or type(p.entries)~='table' then
         blockers[#blockers+1]='Record current own placements first';return blockers
@@ -139,6 +138,16 @@ function C.readiness(s,p,cfg)
         need(C.finite(e.cost) and e.cost>0,'Profile slot '..i..' deployment cost unknown')
         need(not u or not C.finite(u.cost) or u.cost==e.cost,'Profile slot '..i..' deployment price changed')
         need(C.distance(e.pos,e.pos)==0,'Profile slot '..i..' position invalid')
+    end
+    return blockers
+end
+function C.readiness(s,p,cfg)
+    local blockers=C.profileReadiness(s,p,cfg)
+    if cfg.routeConfirmed~=true or not C.contextMatches(cfg.routeContext,s) then
+        blockers[#blockers+1]='Confirm this stage actually advances the Rukia objective'
+    end
+    if cfg.protocolConfirmed~=true or not C.contextMatches(cfg.protocolContext,s) then
+        blockers[#blockers+1]='Placement protocol needs confirmation for this stage'
     end
     return blockers
 end
@@ -218,10 +227,12 @@ function C.engine(cfg,log)
     local e={cfg=cfg,log=log or C.logger(),armed=false,state='IDLE',reason='Full Auto OFF',
         wins=0,losses=0,placements=0,upgrades=0,runs=0,pending=nil,index=1,resultRun=nil}
     function e:stop(reason,state)
+        if self.pending then self.uncertainRun=self.run end
         self.armed=false;self.state=state or 'BLOCKED';self.reason=reason;self.pending=nil
         self.log:add(self.state,reason)
     end
     function e:arm(s,p)
+        if self.uncertainRun==s.run then self:stop('Prior action unconfirmed; enter a fresh match');return false end
         local b=C.readiness(s,p,self.cfg)
         if #b>0 then self:stop(table.concat(b,'; '));return false end
         self.armed=true;self.state='RUNNING';self.reason='Supervised recorded combat'

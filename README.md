@@ -1,6 +1,6 @@
 # [K] Anime Adventures — Rukia progression v6
 
-**Offline-tested, mobile-oriented controller. Current Roblox / Delta compatibility is UNVERIFIED. Unattended Rukia progression is NOT READY.**
+**v6.1.0: recorded Story team controller, offline-tested. User reports verify scripted Bulma placement and upgrades; complete-team combat and replay remain EXPERIMENTAL. Unattended Rukia progression is NOT READY.**
 
 The official experience now displays Update 21 (checked November 1, 2026, Manila date). Current Rukia availability, recipe, rates and protocols could not be verified. Read the [research and progression plan](docs/RUKIA-RESEARCH.md), [audit](docs/AUDIT.md) and [testing guide](TESTING.md).
 
@@ -21,10 +21,11 @@ main.lua bundles local src modules; there is no secondary HTTP loader or externa
 | Progression checklist | Implemented, historical data | Acquisition → trait → stats → evolution. No fabricated pity or live price. |
 | Seven-tab dark touch GUI | Implemented; live untested | RUKIA, TRAITS, STATS, EVOLUTION, FARM, REPORTS, SETTINGS. |
 | Recorded placements/upgrades | Experimental | Exact equipped identity, stage, costs, position and new-model/upgrade feedback required. |
-| One-action Story tests | One Bulma upgrade observed; placement untested | Explicit click, visible unit/slot/price, one request and bounded readback. No Rukia route claim. |
+| One-action Story tests | Bulma placement and upgrades observed in user reports | Explicit click, visible unit/slot/price, one request and bounded readback. Other units remain unverified. |
+| Equipped-team Story Auto | Implemented; experimental, live unverified | Every declared equipped slot needs a recorded position; partial captures auto-save. Affordable placement, then observed upgrades, one action at a time. |
 | Path observation | Experimental observer | Bounded visible movement samples. Active placement uses recorded coordinates. |
-| Results and reports | Offline-tested logic | Exact visible labels, ambiguity remains unknown. Resource deltas are observations, not attributed drops. |
-| Replay | Experimental, restricted | Observed Story/Infinite/Challenge only; stage-specific no-cost confirmation, opt-in and run cap. |
+| Results and reports | Offline-tested logic | Exact visible labels or scoped boolean result event plus current finished marker; ambiguity stays unknown. Resource deltas are not attributed drops. |
+| Replay | Experimental, restricted | Team supports Story only; legacy Rukia controller also permits observed Infinite/Challenge. Stage-specific no-cost confirmation, opt-in and run cap required. |
 | Summons, trait/stat rerolls, evolution | **Unavailable** | No verified current protocol, price or inventory transaction. Budget inputs are planning limits. |
 | Dungeon branches, keys, shops, chests | **Unavailable** | Manual play required; no verified adapter. |
 | Random event towers, target priority, abilities, auto equip | **Unavailable** | No current verified mode/action adapter. |
@@ -36,22 +37,21 @@ Full Auto is OFF after every load. Target/mode/profile/settings changes disarm i
 
 No hooks, GC enumeration, full PlayerGui traversal, speculative remote-name loops or automatic keys/summons. One 0.8-second observer loop, inventory every four seconds, UI every two seconds. Path ≤80 samples; log ≤240 lines; report ≤64 KiB. Tower scans above 120 children block mutation; incomplete result scans cannot confirm victory.
 
-One outstanding remote request, bounded feedback wait, no blind retries. A pending request remains globally locked across replacement until it returns; stopping cannot undo a request already sent. An unclean-session marker reports possible crash/teleport/process exit without claiming which occurred.
+One outstanding remote request, bounded feedback wait, no blind retries. A pending request remains globally locked across replacement until it returns; stopping cannot undo a request already sent. A separate unresolved-action lock survives close/reload in the same executor even after the RPC returns. Exact tower feedback or an observed native round reset clears it; a local run-counter or map-data change cannot. A full Roblox process restart loses executor memory. An unclean-session marker reports possible crash/teleport/process exit without claiming which occurred.
 
 Restart Roblox after older hooked builds. These protections do not prove Android crash freedom.
 
 ## First test
 
-Combat data reads and scripted Bulma upgrades are observed. The v6.0.6 placement attempt timed out with no own tower. v6.0.7 addresses a suspected height-source mismatch and adds request/terrain diagnostics; live placement remains unverified.
+The v6.0.7 report confirms a new exact Bulma at the recorded position after the script request, RPC true and cash 900→100. The request used observed terrain Y91.806 instead of saved model-centre Y93.086. The next test is the recorded team, not another Bulma-only diagnostic.
 
-1. In an active copy of the same Story stage with Bulma absent, run the unchanged loadstring. Confirm **6.0.7**; keep Full Auto OFF.
-2. Tap **READ MATCH DATA + COPY COMBAT REPORT** to connect this injection. The existing saved test profile is retained; its saved X/Z now gets a bounded terrain check.
-3. Start waves and, when affordable, tap **TEST ONE PLACEMENT** once (previous quote 800 Yen).
-4. Leave placement/upgrade controls alone for eight seconds, then paste the automatically copied report. It now includes SURFACE CHECK, SENT POSITION, RPC RESPONSE and scoped game messages.
+1. Load the unchanged entry point inside the same free Story stage and confirm **6.1.0**. Tap FARM → **READ MATCH DATA + COPY COMBAT REPORT** once.
+2. Manually place at least one copy of every equipped unit in suitable spots, then tap **RECORD + SAVE TEAM POSITIONS**. Partial captures save automatically; repeat as more slots are placed. Require **Recorded slots 6 / 6** for the reported team and a successful save.
+3. Enter a fresh copy of the same Story stage. Load again, read match data once and start waves. Keep replay OFF and max runs 1.
+4. Tap **CHECK TEAM READINESS**, then **START TEAM AUTO**. Supervise the run; the controller uses the recorded spots, current prices and Yen reserve.
+5. Use **COPY TEAM REPORT** after a result or blocker. Unknown feedback stops spending without retrying.
 
-If no test profile was saved, record one target and save settings first, then use a fresh copy of the same stage as described in TESTING.md.
-
-See [TESTING.md](TESTING.md) for details. These controls do not require claiming Story is a Rukia farming route. Dungeon keys/chests remain manual and unverified.
+Bulma does not need selling. Multiple copies require additional recorded spots, up to 24 targets; one recorded copy per equipped slot is the minimum. Changed equipment, prices, modifiers or stage can require recapture. See [TESTING.md](TESTING.md). Story automation does not establish a Rukia reward route; Dungeon keys/chests remain manual and unverified.
 
 ### v6.0.1: missing data-path diagnostic
 

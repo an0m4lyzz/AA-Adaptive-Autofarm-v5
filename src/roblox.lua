@@ -31,6 +31,58 @@ return function(C, env, cfg, log)
         if not v or not (v:IsA('NumberValue') or v:IsA('IntValue')) then return nil end
         return C.finite(v.Value) and v.Value or nil
     end
+    -- Shared only in memory. A controller reload must not manufacture a new
+    -- round merely by resetting its local run counter or Loader cache.
+    local function syncRound(self,frame)
+        if not frame then
+            local units,wave=child(WS,'_UNITS'),child(WS,'_wave_num')
+            local w=number(WS,{'_wave_num'}) or 0;local started=scalar(WS,{'_waves_started'})
+            local lobby=w==0 and started~=true and child(WS,'_LOBBIES')
+                and (child(WS,'_EVOLVE') or child(WS,'_traits'))
+            frame={waveNode=wave,w=w,started=started,finished=scalar(child(WS,'_DATA'),{'GameFinished'}),
+                context=lobby and 'Lobby' or units and wave and 'Match' or 'Unknown'}
+        end
+        local previous=env.K_AA_NATIVE_ROUND
+        local job=type(game.JobId)=='string' and game.JobId~='' and game.JobId or nil
+        local changed=type(previous)~='table'
+        if not changed then
+            changed=previous.placeId~=game.PlaceId or (previous.job and job and previous.job~=job)
+                or (previous.waveNode and frame.waveNode and previous.waveNode~=frame.waveNode)
+                or (frame.waveNode and C.finite(previous.w) and frame.w<previous.w)
+                or (frame.started==false and previous.started==true)
+                or (frame.finished==false and previous.finished==true)
+                or (frame.context~='Unknown' and previous.context~='Unknown' and frame.context~=previous.context)
+        end
+        local token=changed and {} or previous.token
+        local function retain(key)
+            local v=frame[key]
+            if v~=nil then return v end
+            if not changed then return previous[key] end
+        end
+        local context=frame.context
+        if context=='Unknown' and not changed then context=previous.context end
+        env.K_AA_NATIVE_ROUND={token=token,placeId=game.PlaceId,job=job or (not changed and previous.job or nil),
+            waveNode=retain('waveNode'),w=frame.waveNode and frame.w or (not changed and previous.w or nil),
+            started=retain('started'),finished=retain('finished'),context=context}
+        if changed then
+            local old=env.K_AA_MUTATION_FEEDBACK
+            if old and old.roundToken~=token then env.K_AA_MUTATION_FEEDBACK=nil end
+        end
+        self.roundToken=token;return token
+    end
+    function A:mutationFenced()
+        local fence=env.K_AA_MUTATION_FEEDBACK
+        return type(fence)=='table' and fence.roundToken==self.roundToken
+    end
+    function A:confirmMutation(token)
+        local fence=env.K_AA_MUTATION_FEEDBACK
+        if token and type(fence)=='table' and fence.token==token then
+            env.K_AA_MUTATION_FEEDBACK=nil
+            if self.lastMutation and self.lastMutation.feedbackToken==token then self.lastMutation.feedbackState='exact readback observed' end
+            return true
+        end
+        return false
+    end
     local function cleanText(value,uuid)
         if type(value)~='string' then return '<'..type(value)..'>' end
         local s=value:gsub('<.->',''):gsub('%c',' ')
@@ -154,7 +206,7 @@ return function(C, env, cfg, log)
     end
     local fields={damage={'damage','dmg'},spa={'spa','attack_cooldown','attack_speed'},
         range={'range','attack_range'},cost={'placement_cost','spawn_cost','place_cost'},
-        nextCost={'next_upgrade_cost','upgrade_cost'},level={'upgrade','upgrade_level'},
+        nextCost={'next_upgrade_cost','upgrade_cost'},level={'upgrade','upgrade_level'},maxLevel={'max_upgrade'},
         takedowns={'takedowns','kills'},worthiness={'worthiness'},slot={'equipped_slot','equippedSlot'}}
     local function record(node,scope)
         local st=child(node,'_stats') or child(node,'stats') or node
@@ -194,13 +246,15 @@ return function(C, env, cfg, log)
         local cached=self.clientService and inventoryParser.read(self.clientService,LP.UserId)
         if cached and cached.valid and cfg.inventoryPath=='' then units=cached.owned;roster=cached.roster end
         self.owned=units;self.roster=roster
+        self.rosterComplete=cached and cached.valid and cfg.inventoryPath=='' and cached.equippedComplete==true or false
+        self.equippedDeclared=cached and cached.valid and cached.equippedDeclared or nil
         self.ownedAt=#roots>0 and now or nil;self.rosterAt=#roster>0 and now or nil
         self.inventorySource=#roots>0 and 'partial player-replicated collection' or 'not exposed through configured paths'
         if cached and cached.valid and cfg.inventoryPath=='' then
             self.ownedAt=now
             self.inventorySource='partial client cache: '..tostring(self.clientSource)..
                 ' | recognized='..#units..' equipped='..#roster..' rejected='..cached.rejected..
-                ' truncated='..tostring(cached.truncated)
+                ' truncated='..tostring(cached.truncated)..' equipped-complete='..tostring(self.rosterComplete)
         elseif cached and not cached.valid and #roots==0 then
             self.inventorySource='client cache schema unavailable; observations cleared'
         end
@@ -510,6 +564,39 @@ return function(C, env, cfg, log)
         r=child(r,name)
         return r and (r:IsA('RemoteFunction') or r:IsA('RemoteEvent')) and r or nil
     end
+    function A:watchResults()
+        if not self.alive then return false end
+        if self.resultConnection then return true end
+        local event=child(child(child(RS,'endpoints'),'server_to_client'),'game_finished')
+        if not event or not event:IsA('RemoteEvent') then self.resultWatchState='unavailable';return false end
+        local token={};self.resultWatchToken=token
+        local ok,connection=pcall(function()
+            return event.OnClientEvent:Connect(function(data)
+                if not self.alive or self.resultWatchToken~=token then return end
+                local w=number(WS,{'_wave_num'}) or 0
+                if w<=0 or not self.stage then self.resultEventReport='Event outside an identified active round';return end
+                local victory
+                if type(data)=='table' then victory=rawget(data,'victory') end
+                if type(victory)~='boolean' then self.resultEventReport='Unsupported victory type='..type(victory);return end
+                local outcome=victory and 'Victory' or 'Defeat';local run=tostring(self.run)
+                local previous=self.resultEvent
+                if previous and previous.run==run and previous.stage==self.stage then
+                    if previous.outcome~=outcome then previous.ambiguous=true;self.resultEventReport='Conflicting result events' end
+                    return
+                end
+                self.resultEvent={run=run,stage=self.stage,outcome=outcome,at=os.clock(),wave=w}
+                self.resultEventReport='Boolean '..outcome..' event; requires current finished marker'
+                log:add('RESULT EVENT',outcome..' | waiting for current finished marker')
+            end)
+        end)
+        if not ok or not connection then self.resultWatchToken=nil;self.resultWatchState='unavailable';return false end
+        self.resultConnection=connection;self.resultWatchState='on';return true
+    end
+    function A:stopResultWatch()
+        self.resultWatchToken=nil
+        if self.resultConnection then pcall(function() self.resultConnection:Disconnect() end) end
+        self.resultConnection=nil;self.resultWatchState='off'
+    end
     function A:busy() return env.K_AA_NETWORK_PENDING~=nil or env.K_AA_CLIENT_CACHE_PENDING~=nil end
     local function acceptLevel(self,data,source)
         if type(data)~='table' then return false end
@@ -530,6 +617,11 @@ return function(C, env, cfg, log)
     end
     function A:issue(kind,args,geometry)
         if not self.alive or self:busy() then return false,'Transport busy/closed' end
+        if kind~='map' then
+            local previous=self.roundToken;local current=syncRound(self)
+            if previous and current~=previous then return false,'Native round changed; refresh before sending' end
+            if self:mutationFenced() then return false,'Prior mutation lacks exact feedback in this round; enter a fresh match' end
+        end
         local remote
         if kind=='map' then remote=child(child(WS,'_MAP_CONFIG'),'GetLevelData')
         else remote=self:remote(({place='spawn_unit',upgrade='upgrade_unit_ingame',replay='set_game_finished_vote'})[kind]) end
@@ -538,6 +630,8 @@ return function(C, env, cfg, log)
         end
         local mark={kind=kind,at=os.clock(),run=self.run}
         if kind~='map' then
+            mark.feedbackToken={};mark.feedbackState='awaiting exact readback'
+            env.K_AA_MUTATION_FEEDBACK={roundToken=self.roundToken,token=mark.feedbackToken,kind=kind}
             mark.endpoint=remote.Name;mark.reply='pending'
             mark.redactUuid=geometry and geometry.uuid or (type(args[1])=='string' and args[1] or nil)
             if geometry and geometry.recorded and geometry.pos then
@@ -575,7 +669,7 @@ return function(C, env, cfg, log)
             end
         end)
         mark.thread=thread
-        return true
+        return true,nil,mark.feedbackToken
     end
     function A:poll()
         if self.messageMark and (self.run~=self.messageMark.run or os.clock()-self.messageMark.at>8) then disconnectMessages(self) end
@@ -596,7 +690,7 @@ return function(C, env, cfg, log)
     function A:observe(now)
         local folder=child(WS,'_UNITS');local waveNode=child(WS,'_wave_num')
         local w=number(WS,{'_wave_num'}) or 0
-        local mapConfig=child(WS,'_MAP_CONFIG');local mapModel=child(WS,'_MAP')
+        local mapConfig=child(WS,'_MAP_CONFIG');local mapModel=child(WS,'_map') or child(WS,'_MAP')
         local started=scalar(WS,{'_waves_started'})
         local finished=scalar(child(WS,'_DATA'),{'GameFinished'})
         local level=type(self.loaderExport)=='table' and rawget(self.loaderExport,'LevelData') or nil
@@ -608,6 +702,8 @@ return function(C, env, cfg, log)
             and (child(WS,'_EVOLVE')~=nil or child(WS,'_traits')~=nil)
         local context=lobby and 'Lobby (observed markers)' or
             (folder~=nil and waveNode~=nil and 'Match objects observed' or 'Unknown')
+        syncRound(self,{waveNode=waveNode,w=w,started=started,finished=finished,
+            context=lobby and 'Lobby' or folder and waveNode and 'Match' or 'Unknown'})
         if folder~=self.lastFolder or w<self.lastWave or mapConfig~=self.lastConfig
             or mapModel~=self.lastMap or waveNode~=self.lastWaveNode
             or context~=self.lastContext
@@ -618,6 +714,8 @@ return function(C, env, cfg, log)
             self.stageSource='unknown';self.stageName=nil;self.resultHidden=false;self.mapRequested=false
             self.staleLevelData=self.lastLevelData;self.mapAttempts=0;self.nextMapTry=0;self.mapStatus='Not read yet'
             self.mapDeadline=now+30
+            self.resultEvent=nil
+            self.resultEventReport='No current-round result event'
             self.path={};self.previous=setmetatable({},{__mode='k'})
             self.nextInventory=0
         end
@@ -636,6 +734,25 @@ return function(C, env, cfg, log)
         local function costs(u)
             local def=type(self.definitions)=='table' and rawget(self.definitions,u.id) or nil
             if type(def)~='table' then return end
+            local farm=rawget(def,'farm_amount');local damage=rawget(def,'damage');local spa=rawget(def,'attack_cooldown')
+            if C.finite(farm) and farm>0 then u.role='farm';u.roleSource='Units.farm_amount'
+            elseif rawget(def,'_show_as_buff_unit')==true then u.role='buff';u.roleSource='Units buff flag'
+            elseif (C.finite(u.damage) and u.damage>0 and C.finite(u.spa) and u.spa>0)
+                or (C.finite(damage) and damage>0 and C.finite(spa) and spa>0) then
+                u.role='combat';u.roleSource='Observed/defined attack stats'
+            else u.role='unknown';u.roleSource='Unclassified' end
+            local upgrades=rawget(def,'upgrade')
+            if C.finite(u.maxLevel) and (u.maxLevel<0 or u.maxLevel%1~=0) then u.maxLevel=nil end
+            if not C.finite(u.maxLevel) and type(upgrades)=='table' then
+                local last,gap,valid=0,false,true
+                for i=1,40 do
+                    local step=rawget(upgrades,i)
+                    if step==nil then gap=true
+                    elseif gap or type(step)~='table' then valid=false;break
+                    else last=i end
+                end
+                if valid and rawget(upgrades,41)==nil and last<40 then u.maxLevel=last;u.maxLevelSource='Units.upgrade contiguous data' end
+            elseif C.finite(u.maxLevel) then u.maxLevelSource='Observed max_upgrade' end
             local base=rawget(def,'cost')
             if C.finite(base) and base>0 then
                 u.baseCost=base
@@ -643,8 +760,7 @@ return function(C, env, cfg, log)
                     u.cost=base*costScale;u.costSource='Units.cost × observed player_cost_scale'
                 end
             end
-            if u.nextCost==nil and C.finite(u.level) and u.level>=0 and u.level<=30 and u.level%1==0 then
-                local upgrades=rawget(def,'upgrade')
+            if u.nextCost==nil and C.finite(u.level) and u.level>=0 and u.level<=40 and u.level%1==0 then
                 local step=type(upgrades)=='table' and rawget(upgrades,u.level+1) or nil
                 local nextCost=type(step)=='table' and rawget(step,'cost') or nil
                 if C.finite(nextCost) and nextCost>0 and costScale then
@@ -718,16 +834,27 @@ return function(C, env, cfg, log)
             end
         end
         local show,outcome,texts=self:result()
+        local outcomeSource=outcome~='unknown' and 'Visible ResultsUI' or 'unknown'
+        local resultEvent=self.resultEvent
+        if resultEvent and resultEvent.run==tostring(self.run) and resultEvent.stage==self.stage
+            and finished==true and now>=resultEvent.at and now-resultEvent.at<=10 and w>=resultEvent.wave then
+            show=true
+            if resultEvent.ambiguous or (outcome~='unknown' and outcome~=resultEvent.outcome) then
+                outcome='unknown';outcomeSource='Conflicting result evidence'
+            else outcome=resultEvent.outcome;outcomeSource='game_finished.victory + GameFinished' end
+        end
         local s={now=now,run=tostring(self.run),inMatch=folder~=nil and waveNode~=nil and not lobby,context=context,
             started=scalar(WS,{'_waves_started'})==true or w>0,stage=self.stage or 'unknown',
             stageName=self.stageName or 'unknown',stageVerified=self.stage~=nil,stageSource=self.stageSource,
             mode=self.mode or cfg.mode or 'Unknown',modeVerified=self.mode~=nil,
             placeId=game.PlaceId,wave=w,cash=money,cashSource=moneySource,units=units,unitsComplete=unitsComplete,
             towerScan=scan,
+            roundToken=self.roundToken,mutationFence=self:mutationFenced(),
             wallet=wallet,walletSources=walletSources,rawResource=rawResource,
             owned=owned,ownedAt=#owned>0 and now or self.ownedAt,roster=roster,rosterAt=self.rosterAt,
+            rosterComplete=self.rosterComplete,equippedDeclared=self.equippedDeclared,
             costScale=costScale,definitionsAvailable=self.definitions~=nil,mapStatus=self.mapStatus,
-            resources=self.resources,resourcesAt=self.resourcesAt,resultVisible=show or finished==true,outcome=outcome,
+            resources=self.resources,resourcesAt=self.resourcesAt,resultVisible=show or finished==true,outcome=outcome,outcomeSource=outcomeSource,
             resultTexts=texts,enemies=count,pathSamples=#self.path,transportBlocked=self:busy(),
             inventorySource=self.inventorySource}
         if s.inMatch and not s.stageVerified and not self.mapRequested and not self:busy()
@@ -764,21 +891,25 @@ return function(C, env, cfg, log)
             'Mode='..fmt(s.mode)..' | observed='..fmt(s.modeVerified),
             'Cash='..fmt(s.cash)..' | source='..fmt(s.cashSource)..' | raw resource='..fmt(s.rawResource),
             'Loaded Units table='..fmt(s.definitionsAvailable)..' | player_cost_scale='..fmt(s.costScale),
+            'Equipment complete='..fmt(s.rosterComplete)..' | declared slots='..fmt(s.equippedDeclared),
             'Map read='..fmt(self.mapStatus)..' | transport pending='..fmt(s.transportBlocked),
+            'Unresolved mutation fence='..fmt(s.mutationFence)..' (survives reload within this executor)',
+            'Outcome='..fmt(s.outcome)..' | source='..fmt(s.outcomeSource)..' | result observer='..fmt(self.resultWatchState)..
+                ' | event='..fmt(self.resultEventReport),
             'Tower scan: examined='..fmt(scan.examined)..' / '..fmt(scan.total)..' | own='..fmt(scan.own)..
                 ' | missing identity='..fmt(scan.missingIdentity)..' | missing position='..fmt(scan.missingPosition)}
         local roster={}
         for _,u in ipairs(s.roster or {}) do
             roster[u.uuid]=u
             rows[#rows+1]='Equipped slot='..fmt(u.slot)..' id='..fmt(u.id)..' | base cost='..fmt(u.baseCost)..
-                ' | effective cost='..fmt(u.cost)..' | source='..fmt(u.costSource)
+                ' | effective cost='..fmt(u.cost)..' | source='..fmt(u.costSource)..' | role='..fmt(u.role)
         end
         for i,u in ipairs(s.units or {}) do
             if i>24 then rows[#rows+1]='Additional towers omitted';break end
             local r=roster[u.uuid]
             rows[#rows+1]='Tower '..i..' id='..fmt(u.id)..' | exact equipped match='..
                 tostring(r~=nil and r.id==u.id)..' | position='..tostring(u.pos~=nil)..' | upgrade='..fmt(u.level)..
-                ' | next cost='..fmt(u.nextCost)..' | source='..fmt(u.nextCostSource)..
+                ' | next cost='..fmt(u.nextCost)..' | max='..fmt(u.maxLevel)..' | source='..fmt(u.nextCostSource)..
                 ' | DMG='..fmt(u.damage)..' SPA='..fmt(u.spa)..' range='..fmt(u.range)
         end
         for _,kind in ipairs({'spawn_unit','upgrade_unit_ingame'}) do
@@ -810,7 +941,7 @@ return function(C, env, cfg, log)
                 ' | elapsed='..tostring(m.elapsed or '?')..' | late='..tostring(m.late or false)
             if m.geometry then rows[#rows+1]='SENT POSITION | recorded='..pointText(m.geometry.recorded)..
                 ' | sent='..pointText(m.geometry.pos)..' | source='..m.geometry.source end
-            rows[#rows+1]='RPC RESPONSE | '..m.reply..' | callOK='..tostring(m.callOK)
+            rows[#rows+1]='RPC RESPONSE | '..m.reply..' | callOK='..tostring(m.callOK)..' | feedback='..tostring(m.feedbackState)
             rows[#rows+1]='SCOPED GAME MESSAGES | observer='..tostring(m.watchState)..' | count='..#m.messages
             for _,v in ipairs(m.messages) do rows[#rows+1]='GAME MESSAGE | '..v end
         end
@@ -856,8 +987,65 @@ return function(C, env, cfg, log)
         if p then p.testSlot=slot end
         return p,why
     end
+    function A:recordTeam(s,previous)
+        if not s.modeVerified or s.mode~='Story' then return nil,'Record teams in an observed Story match' end
+        local roster={};for _,u in ipairs(s.roster or {}) do roster[u.uuid]=u end
+        local selected,byUUID,ignored={}, {},0
+        for _,u in ipairs(s.units or {}) do
+            local r=roster[u.uuid]
+            if r and r.id==u.id then selected[#selected+1]=u;byUUID[u.uuid]=u else ignored+=1 end
+        end
+        if #selected==0 then return nil,'Place an equipped unit manually, then record the team' end
+        local snapshot=table.clone(s);snapshot.units=selected
+        local p,why=self:record(snapshot,cfg.recordCosts)
+        if not p then return nil,why end
+        p.kind='team-v1';p.ignoredOwn=ignored
+        local function copyEntry(e)
+            if type(e)~='table' or type(e.uuid)~='string' or type(e.id)~='string' or C.distance(e.pos,e.pos)~=0
+                or not C.finite(e.cost) or e.cost<=0 then return nil end
+            return {uuid=e.uuid,id=e.id,slot=e.slot,pos=table.clone(e.pos),cost=e.cost,costSource=e.costSource,
+                wave=0,role=e.role,roleSource=e.roleSource}
+        end
+        for _,e in ipairs(p.entries) do
+            local u=byUUID[e.uuid];local r=roster[e.uuid]
+            e.role=u.role or r.role or ((C.finite(u.damage) and u.damage>0 and C.finite(u.spa) and u.spa>0) and 'combat' or 'unknown')
+            e.roleSource=u.roleSource or r.roleSource or 'Observed attack stats / unclassified'
+        end
+        if type(previous)=='table' and previous.kind=='team-v1' and C.contextMatches(previous,s) then
+            if previous.costScale~=s.costScale then return nil,'Cost modifier changed; capture a new full team profile' end
+            if type(previous.entries)=='table' then
+                for i,e in ipairs(previous.entries) do
+                    if i>24 then return nil,'Previous profile exceeds 24 placements' end
+                    local r=type(e)=='table' and roster[e.uuid]
+                    if r and r.id==e.id and not byUUID[e.uuid] then
+                        local copy=copyEntry(e)
+                        if not copy then return nil,'Previous team profile contains an invalid target' end
+                        p.entries[#p.entries+1]=copy
+                    end
+                end
+            end
+        end
+        if #p.entries>24 then return nil,'At most 24 recorded team placements' end
+        table.sort(p.entries,function(a,b)
+            local ra,rb=roster[a.uuid],roster[b.uuid]
+            if ra.slot~=rb.slot then return ra.slot<rb.slot end
+            return a.pos[1]==b.pos[1] and a.pos[3]<b.pos[3] or a.pos[1]<b.pos[1]
+        end)
+        return p
+    end
+    function A:checkTeamSurface(p,s)
+        if not C.contextMatches(p,s) or type(p.entries)~='table' or #p.entries<1 or #p.entries>24 then
+            return false,'Invalid team stage/profile'
+        end
+        for i,e in ipairs(p.entries) do
+            local pos,why=self:placementSurface(e.pos,e.id)
+            if not pos then return false,'Target '..i..' '..tostring(e.id)..': '..tostring(why) end
+        end
+        return true
+    end
     function A:close()
         disconnectMessages(self)
+        self:stopResultWatch()
         self.alive=false;self.clientService=nil;self.clientBinding=nil;self.loaderExport=nil;self.definitions=nil
     end
     return A

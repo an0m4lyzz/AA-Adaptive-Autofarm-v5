@@ -125,8 +125,14 @@ return function(app)
     label('EVOLUTION','Reported sources: Sacred Treasure from Shibuya Portals; fruit from current fruit challenges. Current eligibility, quantities, prices and recipes need live verification. Evolution and material purchases stay manual.')
     label('FARM',function() return app:farmText() end,colors.text)
     button('FARM','READ MATCH DATA + COPY COMBAT REPORT',function() app:readMatchData() end)
+    label('FARM',function() return app.team:text(app.snapshot,app.teamProfile) end,colors.text)
+    label('FARM','RECORDED STORY TEAM\nPlace each equipped unit manually once, then record. Partial captures save automatically; repeat as more slots are placed. Team Auto requires every equipped slot and uses those spots in the same stage. Other units/replay still need supervised live testing.')
+    button('FARM','RECORD + SAVE TEAM POSITIONS',function() app:recordTeam() end)
+    button('FARM','CHECK TEAM READINESS',function() app:checkTeam() end)
+    button('FARM',function() return app.team.armed and 'STOP TEAM AUTO' or 'START TEAM AUTO • EXPERIMENTAL STORY' end,function() app:toggleTeam() end)
+    button('FARM','COPY TEAM REPORT',function() app:copyTeamReport() end)
     label('FARM','First combat test: enter a free Story stage, start waves and place one equipped unit manually. Then read match data here. Compare cash/costs with the game. This action stops combat and sends no placement or upgrade.')
-    button('FARM',function() return app.engine.armed and 'STOP FULL AUTO' or 'FULL AUTO: OFF • EXPERIMENTAL COMBAT' end,function() app:toggleFarm() end)
+    button('FARM',function() return app.engine.armed and 'STOP RUKIA ROUTE AUTO' or 'RUKIA ROUTE AUTO: OFF • UNVERIFIED' end,function() app:toggleFarm() end)
     button('FARM','CHECK READINESS',function() app:checkReady() end)
     button('FARM','RECORD CURRENT OWN PLACEMENTS',function() app:record() end)
     label('FARM','SINGLE-ACTION STORY TESTS\nRecord one tower from the selected slot; other defenders may stay placed. These buttons spend the displayed match Yen once and stop. Keep Full Auto OFF; leave the game controls alone during the 8-second readback. The report copies automatically. A successful test does not confirm a Rukia farming route.')
@@ -151,6 +157,7 @@ return function(app)
     label('FARM','Automatic dungeon room choices, chests, keys, target priority, skills and queueing: UNAVAILABLE. Random tower event modes need their own adapter. Recorded positions are user data, not a map datamine.')
     button('REPORTS','COPY COMPLETE REPORT',function() app:copyReport() end)
     button('REPORTS','COPY COMBAT REPORT',function() app:copyCombatReport() end)
+    button('REPORTS','COPY TEAM REPORT',function() app:copyTeamReport() end)
     button('REPORTS','SCAN DATA PATHS + COPY REPORT',function() app:scanPathsAndCopy() end)
     button('REPORTS','SAVE BOUNDED REPORT LOCALLY',function() app:saveReport() end)
     label('REPORTS',function() return app:reportStatus() end,colors.text)
@@ -183,7 +190,8 @@ return function(app)
         if not self.alive then return end
         for _,row in ipairs(self.labels) do row.x.Text=tostring(row.fn()) end
         for _,row in ipairs(self.buttons) do row.x.Text=tostring(row.fn()) end
-        footer.Text=app.engine.state..' • '..tostring(app.status):sub(1,140)
+        local active=app.team.armed and app.team or app.engine
+        footer.Text=active.state..' • '..tostring(app.status):sub(1,140)
         local cam=workspace.CurrentCamera
         if cam then
             scale.Scale=math.clamp(math.min(cam.ViewportSize.X/380,cam.ViewportSize.Y/550),.5,1)
