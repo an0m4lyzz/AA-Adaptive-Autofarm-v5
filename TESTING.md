@@ -29,7 +29,17 @@ The submitted v6.0.4 report now observes namek_level_1, Story, cash 400, explici
 
 This emits one upgrade request, without requiring or setting Rukia-route/protocol confirmations. It does not turn on Full Auto or replay. At most one attempt per action kind is allowed per observed run in this controller. Any unconfirmed attempt blocks further mutation testing/farming for that run. STOP cannot undo a native request already sent. No live test of these new buttons has been performed here.
 
-After an observed upgrade, the later placement test uses the same recorded target spot. **Manually sell that test copy**, wait until the displayed deployment price plus reserve is affordable, and tap TEST ONE PLACEMENT once. No automatic selling occurs. Existing target copies, occupied spots or multiple matching readbacks block the test. Only a unique new own model with exact UUID/ID and position can count as an observed placement after request.
+The user then observed the exact scripted Bulma upgrade **1→2** with a 3,000-Yen quote. The placement request remains untested. Bulma cannot be sold in the reported build, so the previous unconditional selling instruction was incorrect.
+
+### Placement with an unsellable unit (v6.0.6)
+
+1. While Bulma is still placed, select test slot 4 and tap RECORD ONE TEST TARGET if not already recorded.
+2. Tap SETTINGS → SAVE SETTINGS / RECORDED PROFILE. Wait for **Settings saved**; this file includes the separate test profile and its position. If saving fails, keep the current match and report that blocker.
+3. Enter a fresh copy of the **same Story stage**, run the unchanged loadstring, and leave Full Auto OFF. The saved test profile restores automatically.
+4. Read match data, start waves, and leave Bulma's recorded spot empty. When her displayed deployment price plus reserve is affordable, tap TEST ONE PLACEMENT once. The prior reported price was 800 Yen.
+5. Leave placement/upgrade controls alone for eight seconds, then paste the automatically copied report.
+
+The profile's stage, mode, place, current equipped identity, costs and modifier must still match. Existing target copies, occupied spots or multiple matching readbacks block the test. Only a unique new own model with exact UUID/ID and position can count as an observed placement after request. No selling action is sent. For another unit, manual removal is an option only when the actual game exposes a working Sell control.
 
 ## Read the client cache
 

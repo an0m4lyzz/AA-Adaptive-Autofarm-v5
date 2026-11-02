@@ -139,4 +139,15 @@ check('selected test slot cannot silently follow a moved equipped copy',function
     local t,s,p=setup();p.testSlot=4;s.roster[1].slot=5
     assert(not t:quote('place',s,p))
 end)
+check('a saved target profile can place an unsellable unit in a fresh matching stage',function()
+    local t,s,p,cfg=setup(true);p.testSlot=4
+    assert(not t:quote('place',s,p))
+    local restored=makeTrial(C,C.sanitize(cfg),C.logger())
+    local fresh=table.clone(s);fresh.run='fresh-match';fresh.units={};fresh.cash=900
+    local quote=restored:quote('place',fresh,p)
+    assert(quote and quote.cost==800 and C.distance(quote.pos,p.entries[1].pos)==0)
+    local action=restored:begin('place',fresh,p,quote)
+    assert(action and action.kind=='place' and action.uuid=='a')
+    fresh.stage='different-stage';assert(not makeTrial(C,cfg,C.logger()):quote('place',fresh,p))
+end)
 print('All '..n..' trial tests passed')

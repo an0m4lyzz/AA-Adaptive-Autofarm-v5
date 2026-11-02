@@ -5,7 +5,7 @@ local __modules = {}
 __modules.core = (function()
 -- Pure Luau: no Roblox globals, executor introspection, or remote calls.
 local C = {}
-C.version = '6.0.5'
+C.version = '6.0.6'
 C.recipe = {status='historical',takedowns=7500,items={SacredTreasure=200,
     StarFruit=12,StarFruitBlue=5,StarFruitRed=3,StarFruitGreen=4,StarFruitEpic=1}}
 C.itemOrder = {'SacredTreasure','StarFruit','StarFruitBlue','StarFruitRed','StarFruitGreen','StarFruitEpic'}
@@ -536,7 +536,7 @@ return function(C,cfg,log)
         if kind=='place' then
             for _,u in ipairs(s.units or {}) do
                 if u.uuid==e.uuid and u.id==e.id then
-                    return nil,'Recorded unit already placed; sell it manually before a placement test'
+                    return nil,'Target already placed; save its test profile, then use a fresh copy of this stage'
                 end
                 if C.distance(u.pos,e.pos)<=3 then return nil,'Another tower occupies the recorded position' end
             end
@@ -1488,6 +1488,7 @@ return function(app)
         app:cycle('trialSlot',{1,2,3,4,5,6,7,8})
     end)
     button('FARM','RECORD ONE TEST TARGET',function() app:recordTrialTarget() end)
+    label('FARM','For an unsellable target: save settings after recording, enter the same Story stage fresh, load this script, read match data and start waves. Use TEST ONE PLACEMENT with the saved target position.')
     button('FARM',function() return app:trialButton('upgrade') end,function() app:runTrial('upgrade') end)
     button('FARM',function() return app:trialButton('place') end,function() app:runTrial('place') end)
     button('FARM','STOP SINGLE-ACTION TEST',function() app:stopTrial() end)

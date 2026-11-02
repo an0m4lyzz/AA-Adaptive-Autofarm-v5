@@ -43,7 +43,7 @@ return function(C,cfg,log)
         if kind=='place' then
             for _,u in ipairs(s.units or {}) do
                 if u.uuid==e.uuid and u.id==e.id then
-                    return nil,'Recorded unit already placed; sell it manually before a placement test'
+                    return nil,'Target already placed; save its test profile, then use a fresh copy of this stage'
                 end
                 if C.distance(u.pos,e.pos)<=3 then return nil,'Another tower occupies the recorded position' end
             end

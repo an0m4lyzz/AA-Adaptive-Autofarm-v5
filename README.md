@@ -21,7 +21,7 @@ main.lua bundles local src modules; there is no secondary HTTP loader or externa
 | Progression checklist | Implemented, historical data | Acquisition → trait → stats → evolution. No fabricated pity or live price. |
 | Seven-tab dark touch GUI | Implemented; live untested | RUKIA, TRAITS, STATS, EVOLUTION, FARM, REPORTS, SETTINGS. |
 | Recorded placements/upgrades | Experimental | Exact equipped identity, stage, costs, position and new-model/upgrade feedback required. |
-| One-action Story tests | Implemented; live request untested | Explicit click, visible unit/slot/price, one request and bounded readback. No Rukia route claim. |
+| One-action Story tests | One Bulma upgrade observed; placement untested | Explicit click, visible unit/slot/price, one request and bounded readback. No Rukia route claim. |
 | Path observation | Experimental observer | Bounded visible movement samples. Active placement uses recorded coordinates. |
 | Results and reports | Offline-tested logic | Exact visible labels, ambiguity remains unknown. Resource deltas are observations, not attributed drops. |
 | Replay | Experimental, restricted | Observed Story/Infinite/Challenge only; stage-specific no-cost confirmation, opt-in and run cap. |
@@ -42,15 +42,15 @@ Restart Roblox after older hooked builds. These protections do not prove Android
 
 ## First test
 
-The user's v6.0.4 match report confirms stage, Story mode, cash, all six base/effective costs, Bulma's exact equipped match/position and next-upgrade quote. The next boundary is one actual request.
+The user's v6.0.4 report demonstrates combat data reads, and the v6.0.5 report observes one scripted Bulma upgrade **1→2**. Placement remains untested. Bulma is unsellable in the reported build, so use a saved position in a fresh matching stage.
 
-1. Execute the unchanged loadstring inside an active **free Story stage**. Confirm v6.0.5; leave Full Auto OFF.
-2. Use **FARM → READ MATCH DATA + COPY COMBAT REPORT** once. Place Bulma and any defenders manually as needed.
-3. Leave **TEST TARGET: EQUIPPED SLOT 4** for this reported team, then tap **RECORD ONE TEST TARGET**.
-4. When you can afford the displayed price plus reserve, tap **TEST ONE UPGRADE** once. The reported Bulma 0→1 price was 1,500 Yen; inspect the current button.
-5. Leave placement/upgrade controls alone for up to eight seconds, then paste the automatically copied combat report.
+1. With Bulma placed, leave **TEST TARGET: EQUIPPED SLOT 4** and tap **RECORD ONE TEST TARGET**.
+2. Tap **SETTINGS → SAVE SETTINGS / RECORDED PROFILE** and wait for **Settings saved** before leaving.
+3. Enter a fresh copy of the same Story stage and execute the unchanged loadstring. Confirm v6.0.6; keep Full Auto OFF.
+4. Read match data, start waves and keep the saved Bulma spot empty.
+5. When affordable, tap **TEST ONE PLACEMENT** at the displayed quote (previously 800 Yen), wait up to eight seconds and paste the automatically copied report.
 
-See [TESTING.md](TESTING.md) for the later one-placement test. These controls do not require claiming Story is a Rukia farming route. Dungeon keys/chests remain manual and unverified.
+See [TESTING.md](TESTING.md) for details. These controls do not require claiming Story is a Rukia farming route. Dungeon keys/chests remain manual and unverified.
 
 ### v6.0.1: missing data-path diagnostic
 
@@ -91,6 +91,12 @@ The v6.0.4 live report confirms the missing reads now execute in namek_level_1: 
 Select an equipped slot and record its single placed copy into a separate test profile. Other defenders may remain placed. Buttons display unit ID, actual slot, upgrade level and match-Yen price; expired or changed quotes cannot spend. Each kind permits one explicit request per observed run in the current controller, followed by an eight-second readback. The observer never emits another action. There is no automatic upgrade chain, replay, selling, route/protocol promotion or premium endpoint.
 
 New-model readback requires exactly one new matching model at the recorded position. Upgrade readback requires the same model with exactly one added level. Ambiguous, late, changed-context and rejected results stay unconfirmed and block further tests/farming for that observed run. Reports copy automatically on completion. Native requests cannot be undone by STOP. Reloading resets in-memory test history; the global pending native-request lock still applies. Live request acceptance and complete Rukia progression remain unverified.
+
+### v6.0.6: correct unsellable-unit guidance
+
+The user's v6.0.5 report observes the scripted Bulma upgrade **1→2**. The user also reports that Bulma cannot be sold, invalidating the previous placement-test instructions. The test already supports a saved target profile in a fresh matching stage: record Bulma, save settings, enter the same stage fresh, load the script, read match data, start waves and test one placement into the saved empty position. See [the exact steps](TESTING.md#placement-with-an-unsellable-unit-v606).
+
+Updated help/blocker text and documented the existing save/restore path. No mutation behavior or new selling endpoint is added. A regression exercises the restored profile in a fresh matching run and rejects a different stage. Placement and complete farming still require live verification.
 
 ## Development
 
