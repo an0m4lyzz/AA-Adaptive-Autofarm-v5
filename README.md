@@ -2,6 +2,8 @@
 
 **v7.0.0: native Smart Auto, existing-run Dungeon flow and opt-in teleport following. Offline tested; new Roblox/Delta behavior remains EXPERIMENTAL. Complete Rukia progression is not live verified.**
 
+The [complete hub master plan](docs/superpowers/specs/2026-11-02-complete-hub-design.md) accounts for the full reference menu and Rukia workflow, with an [implementation checklist](docs/superpowers/plans/2026-11-02-complete-hub.md). These documents describe future work; the runtime remains v7.0.0.
+
 The official experience now displays Update 21 (checked November 1, 2026, Manila date). Current Rukia availability, recipe, rates and protocols could not be verified. Read the [research and progression plan](docs/RUKIA-RESEARCH.md), [audit](docs/AUDIT.md) and [testing guide](TESTING.md).
 
 ## Unchanged entry point
